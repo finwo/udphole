@@ -15,7 +15,7 @@
 #include "domain/config.h"
 #include "daemon.h"
 #include "interface/api/server.h"
-#include "domain/session.h"
+#include "domain/daemon/session.h"
 
 static void register_domain_commands(void) {
   api_register_domain_cmd("session.create", domain_session_create);

@@ -512,7 +512,8 @@ static void spawn_session_pt(session_t *s) {
   s->task = (struct pt_task *)(intptr_t)domain_schedmod_pt_create(session_pt, s);
 }
 
-resp_object *domain_session_create(resp_object *args) {
+resp_object *domain_session_create(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 2) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.create'");
@@ -549,7 +550,8 @@ resp_object *domain_session_create(resp_object *args) {
   return res;
 }
 
-resp_object *domain_session_list(resp_object *args) {
+resp_object *domain_session_list(const char *cmd, resp_object *args) {
+  (void)cmd;
   (void)args;
 
   resp_object *res = resp_array_init();
@@ -564,7 +566,8 @@ resp_object *domain_session_list(resp_object *args) {
   return res;
 }
 
-resp_object *domain_session_info(resp_object *args) {
+resp_object *domain_session_info(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 2) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.info'");
@@ -627,7 +630,8 @@ resp_object *domain_session_info(resp_object *args) {
   return res;
 }
 
-resp_object *domain_session_destroy(resp_object *args) {
+resp_object *domain_session_destroy(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 2) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.destroy'");
@@ -659,7 +663,8 @@ resp_object *domain_session_destroy(resp_object *args) {
   return res;
 }
 
-resp_object *domain_socket_create_listen(resp_object *args) {
+resp_object *domain_socket_create_listen(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 3) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.create.listen'");
@@ -702,7 +707,8 @@ resp_object *domain_socket_create_listen(resp_object *args) {
   return res;
 }
 
-resp_object *domain_socket_create_connect(resp_object *args) {
+resp_object *domain_socket_create_connect(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 5) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.create.connect'");
@@ -755,7 +761,8 @@ resp_object *domain_socket_create_connect(resp_object *args) {
   return res;
 }
 
-resp_object *domain_socket_destroy(resp_object *args) {
+resp_object *domain_socket_destroy(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 3) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.destroy'");
@@ -796,7 +803,8 @@ resp_object *domain_socket_destroy(resp_object *args) {
   return res;
 }
 
-resp_object *domain_forward_list(resp_object *args) {
+resp_object *domain_forward_list(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 2) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.list'");
@@ -829,7 +837,8 @@ resp_object *domain_forward_list(resp_object *args) {
   return res;
 }
 
-resp_object *domain_forward_create(resp_object *args) {
+resp_object *domain_forward_create(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 4) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.create'");
@@ -890,7 +899,8 @@ resp_object *domain_forward_create(resp_object *args) {
   return res;
 }
 
-resp_object *domain_forward_destroy(resp_object *args) {
+resp_object *domain_forward_destroy(const char *cmd, resp_object *args) {
+  (void)cmd;
   if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 4) {
     resp_object *err = resp_array_init();
     resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.destroy'");
@@ -935,7 +945,8 @@ resp_object *domain_forward_destroy(resp_object *args) {
   return res;
 }
 
-resp_object *domain_system_load(resp_object *args) {
+resp_object *domain_system_load(const char *cmd, resp_object *args) {
+  (void)cmd;
   (void)args;
 
   double loadavg[3];
@@ -963,7 +974,8 @@ resp_object *domain_system_load(resp_object *args) {
   return res;
 }
 
-resp_object *domain_session_count(resp_object *args) {
+resp_object *domain_session_count(const char *cmd, resp_object *args) {
+  (void)cmd;
   (void)args;
 
   size_t count = 0;

@@ -3,6 +3,7 @@ const dgram = require('dgram');
 const {
   spawnDaemon,
   killDaemon,
+  killAllDaemons,
   connectApi,
   apiCommand,
   createUdpEchoServer,
@@ -37,6 +38,7 @@ async function runTest() {
   let daemon = null;
   let apiSock = null;
   let echoServer = null;
+  let returnCode = 0;
 
   console.log('=== Listen Socket Re-learn Test ===');
   console.log('Testing: listen socket re-learns remote address when different client sends\n');
@@ -123,24 +125,24 @@ async function runTest() {
       console.log('\n✓ PASS: Listen socket correctly re-learned new remote address');
       console.log('   Second client (from port 50002) was able to communicate');
       console.log('   through the same listen socket after the first client.');
-      process.exit(0);
     } else if (msgB.data === 'from-A') {
       console.log('\n✗ FAIL: Listen socket did NOT re-learn new remote address');
       console.log('   The second client\'s packet was sent back to the first client');
       console.log('   instead of the second client. This is the bug to fix.');
       console.log(`   Expected to receive from port 50002, but responses went to port ${msgA.rinfo.port}`);
-      process.exit(1);
     } else {
       throw new Error(`Unexpected message: "${msgB.data}"`);
     }
 
   } catch (err) {
     console.error(`\n✗ FAIL: ${err.message}`);
-    process.exit(1);
+    returnCode = 1;
   } finally {
     if (echoServer) echoServer.socket.close();
     if (apiSock) apiSock.end();
     if (daemon) await killDaemon(daemon);
+    await killAllDaemons();
+    process.exit(returnCode);
   }
 }
 
