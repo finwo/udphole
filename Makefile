@@ -95,7 +95,7 @@ doc/license.man: LICENSE.md
 	pandoc LICENSE.md -f markdown -t man --standalone=false -o doc/license.man
 
 $(BIN).1: doc/udphole.1.in doc/cli_doc.man doc/license.man
-	VERSION=$(VERSION) envsubst '$$VERSION' < doc/upbx.1.in | sed '/__COMMANDS_MAN__/r doc/cli_doc.man' | sed '/__COMMANDS_MAN__/d' | sed '/__LICENSE_MAN__/r doc/license.man' | sed '/__LICENSE_MAN__/d' > $(BIN).1
+	VERSION=$(VERSION) envsubst '$$VERSION' < doc/udphole.1.in | sed '/__COMMANDS_MAN__/r doc/cli_doc.man' | sed '/__COMMANDS_MAN__/d' | sed '/__LICENSE_MAN__/r doc/license.man' | sed '/__LICENSE_MAN__/d' > $(BIN).1
 
 # .cc.o:
 # 	$(CPP) $< $(CPPFLAGS) -c -o $@
