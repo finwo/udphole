@@ -2,6 +2,7 @@ const path = require('path');
 const {
   spawnDaemon,
   killDaemon,
+  killAllDaemons,
   connectApi,
   apiCommand,
   createUdpEchoServer,
@@ -16,6 +17,7 @@ async function runTest() {
   let daemon = null;
   let apiSock = null;
   let echoServer = null;
+  let returnCode = 0;
 
   console.log('=== Basic Forwarding Test ===');
   console.log('Testing: UDP packets are forwarded from listen socket to connect socket\n');
@@ -80,18 +82,19 @@ async function runTest() {
       console.log('\n✓ PASS: UDP forwarding works correctly');
       console.log('   Packet was forwarded from listen socket to connect socket');
       console.log('   and echoed back successfully.');
-      process.exit(0);
     } else {
       throw new Error(`Expected "hello", got "${msg.data}"`);
     }
 
   } catch (err) {
     console.error(`\n✗ FAIL: ${err.message}`);
-    process.exit(1);
+    returnCode = 1;
   } finally {
     if (echoServer) echoServer.socket.close();
     if (apiSock) apiSock.end();
     if (daemon) await killDaemon(daemon);
+    await killAllDaemons();
+    process.exit(returnCode);
   }
 }
 

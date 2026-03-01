@@ -10,7 +10,7 @@
 struct api_client_state;
 typedef struct api_client_state api_client_t;
 
-typedef resp_object *(*domain_cmd_fn)(resp_object *args);
+typedef resp_object *(*domain_cmd_fn)(const char *cmd, resp_object *args);
 
 PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task));
 

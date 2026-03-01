@@ -2,6 +2,7 @@ const path = require('path');
 const {
   spawnDaemon,
   killDaemon,
+  killAllDaemons,
   connectApi,
   apiCommand
 } = require('./helpers');
@@ -12,6 +13,7 @@ const API_PORT = 9123;
 async function runTest() {
   let daemon = null;
   let apiSock = null;
+  let returnCode = 0;
 
   console.log('=== System Commands Test ===');
   console.log('Testing: system.load and session.count commands\n');
@@ -88,14 +90,15 @@ async function runTest() {
     }
 
     console.log('\n✓ PASS: All system commands work correctly');
-    process.exit(0);
 
   } catch (err) {
     console.error(`\n✗ FAIL: ${err.message}`);
-    process.exit(1);
+    returnCode = 1;
   } finally {
     if (apiSock) apiSock.end();
     if (daemon) await killDaemon(daemon);
+    await killAllDaemons();
+    process.exit(returnCode);
   }
 }
 

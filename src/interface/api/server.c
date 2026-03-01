@@ -462,7 +462,7 @@ static void dispatch_command(api_client_t *c, char **args, int nargs) {
       resp_array_append_bulk(domain_args, args[i]);
     }
 
-    resp_object *result = dcmd->func(domain_args);
+    resp_object *result = dcmd->func(args[0], domain_args);
     resp_free(domain_args);
 
     if (!result) {

@@ -117,6 +117,10 @@ test: $(BIN)
 	@node test/listen-relearn-tcp.js
 	@sleep 1
 	@node test/listen-relearn-unix.js
+	@sleep 1
+	@node test/cluster-basic.js
+	@sleep 1
+	@node test/cluster-integration.js
 
 .PHONY: clean
 clean:

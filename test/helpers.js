@@ -23,15 +23,11 @@ function findFreePort() {
 }
 
 function spawnDaemon(configPath) {
-  return new Promise((resolve, reject) => {
-    const { execSync } = require('child_process');
-    try { execSync('pkill -9 udphole 2>/dev/null', { stdio: 'ignore' }); } catch(e) {}
-    
+  return new Promise(async (resolve, reject) => {
+    await sleep(500);
     const daemon = spawn(DAEMON_PATH, ['-f', configPath, 'daemon', '-D'], {
       stdio: ['ignore', 'pipe', 'pipe', 'pipe']
     });
-
-
 
     let output = '';
     const startTimeout = setTimeout(() => {
@@ -51,6 +47,14 @@ function spawnDaemon(configPath) {
       clearTimeout(startTimeout);
       reject(err);
     });
+  });
+}
+
+function killAllDaemons() {
+  return new Promise((resolve) => {
+    const { execSync } = require('child_process');
+    try { execSync('pkill -9 udphole 2>/dev/null', { stdio: 'ignore' }); } catch(e) {}
+    sleep(1000).then(resolve);
   });
 }
 
@@ -237,6 +241,7 @@ module.exports = {
   findFreePort,
   spawnDaemon,
   killDaemon,
+  killAllDaemons,
   connectApi,
   connectUnixApi,
   apiCommand,
