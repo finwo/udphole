@@ -1,6 +1,6 @@
 # UDPHOLE
 
-A standalone UDP wormhole proxy: forward UDP packets between sockets using a simple API
+A generic session-based UDP wormhole proxy: forward UDP packets between sockets using a simple RESP2 API
 
 ---
 
@@ -131,22 +131,32 @@ session.forward.create nat-traversal client-b client-a
 
 ```ini
 [udphole]
-mode = builtin
 ports = 7000-7999
 listen = :12345
+advertise = 203.0.113.1
 
-[api]
-listen = :12345
+[user:admin]
+secret = adminpass
+permit = *
+
+[user:*]
+permit = ping
 ```
 
 ### `[udphole]`
 
 | Option | Description |
 |--------|-------------|
-| `mode` | Currently only `builtin` is supported. |
 | `ports` | Port range for UDP sockets, as `low-high` (e.g. `7000-7999`). Default 7000–7999. |
 | `listen` | API server listen address. If not set, API server is disabled. |
 | `advertise` | Optional. IP address to advertise in API responses instead of the port number. Useful when behind NAT. |
+
+### `[user:<name>]`
+
+| Option | Description |
+|--------|-------------|
+| `secret` | Password for authentication. |
+| `permit` | Space-separated list of command patterns the user can execute. Use `*` for all commands, `session.*` for all session commands, etc. |
 
 ---
 
@@ -188,4 +198,4 @@ The API uses the RESP2 (Redis) protocol. Connect with `redis-cli` or any Redis c
 
 ---
 
-*UDP hole is extracted from the UPBX project as a standalone UDP proxy daemon.*
+A generic session-based UDP wormhole proxy.
