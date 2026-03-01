@@ -18,8 +18,8 @@ jobs:
 
       - name: Install dependencies
         shell: bash
-        run: cd core && dep install
+        run: dep install
 
       - name: Run tests
         shell: bash
-        run: cd core && make test
+        run: make test
