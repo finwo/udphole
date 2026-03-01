@@ -164,9 +164,29 @@ static void free_socket(socket_t *sock) {
 static void destroy_session(session_t *s) {
   if (!s) return;
   s->marked_for_deletion = 1;
+
+  for (size_t i = 0; i < s->sockets_count; i++) {
+    if (s->sockets[i]) {
+      free_socket(s->sockets[i]);
+    }
+  }
+  free(s->sockets);
+
+  for (size_t i = 0; i < s->forwards_count; i++) {
+    free(s->forwards[i].src_socket_id);
+    free(s->forwards[i].dst_socket_id);
+  }
+  free(s->forwards);
+
+  free(s->session_id);
+  free(s);
+
   for (size_t i = 0; i < sessions_count; i++) {
     if (sessions[i] == s) {
-      sessions[i] = NULL;
+      for (size_t j = i; j < sessions_count - 1; j++) {
+        sessions[j] = sessions[j + 1];
+      }
+      sessions_count--;
       break;
     }
   }
@@ -743,6 +763,48 @@ static char cmd_forward_destroy(api_client_t *c, char **args, int nargs) {
   return api_write_ok(c) ? 1 : 0;
 }
 
+static char cmd_system_load(api_client_t *c, char **args, int nargs) {
+  (void)args;
+  if (nargs != 1) {
+    return api_write_err(c, "wrong number of arguments for 'system.load'") ? 1 : 0;
+  }
+
+  double loadavg[3];
+  if (getloadavg(loadavg, 3) != 3) {
+    return api_write_err(c, "failed to get load average") ? 1 : 0;
+  }
+
+  if (!api_write_array(c, 6)) return 0;
+  if (!api_write_bulk_cstr(c, "1min")) return 0;
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%.2f", loadavg[0]);
+  if (!api_write_bulk_cstr(c, buf)) return 0;
+  if (!api_write_bulk_cstr(c, "5min")) return 0;
+  snprintf(buf, sizeof(buf), "%.2f", loadavg[1]);
+  if (!api_write_bulk_cstr(c, buf)) return 0;
+  if (!api_write_bulk_cstr(c, "15min")) return 0;
+  snprintf(buf, sizeof(buf), "%.2f", loadavg[2]);
+  if (!api_write_bulk_cstr(c, buf)) return 0;
+
+  return 1;
+}
+
+static char cmd_session_count(api_client_t *c, char **args, int nargs) {
+  (void)args;
+  if (nargs != 1) {
+    return api_write_err(c, "wrong number of arguments for 'session.count'") ? 1 : 0;
+  }
+
+  size_t count = 0;
+  for (size_t i = 0; i < sessions_count; i++) {
+    if (sessions[i] != NULL) {
+      count++;
+    }
+  }
+
+  return api_write_int(c, (int)count) ? 1 : 0;
+}
+
 static void register_session_commands(void) {
   api_register_cmd("session.create", cmd_session_create);
   api_register_cmd("session.list", cmd_session_list);
@@ -754,6 +816,8 @@ static void register_session_commands(void) {
   api_register_cmd("session.forward.list", cmd_forward_list);
   api_register_cmd("session.forward.create", cmd_forward_create);
   api_register_cmd("session.forward.destroy", cmd_forward_destroy);
+  api_register_cmd("session.count", cmd_session_count);
+  api_register_cmd("system.load", cmd_system_load);
   log_info("udphole: registered session.* commands");
 }
 

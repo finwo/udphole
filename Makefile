@@ -108,6 +108,8 @@ $(BIN): $(OBJ)
 
 .PHONY: test
 test: $(BIN)
+	@node test/system-commands.js
+	@sleep 1
 	@node test/basic-forwarding-tcp.js
 	@sleep 1
 	@node test/basic-forwarding-unix.js
