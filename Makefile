@@ -94,7 +94,7 @@ doc/license.man: LICENSE.md
 	@mkdir -p doc
 	pandoc LICENSE.md -f markdown -t man --standalone=false -o doc/license.man
 
-$(BIN).1: doc/upbx.1.in doc/cli_doc.man doc/license.man
+$(BIN).1: doc/udphole.1.in doc/cli_doc.man doc/license.man
 	VERSION=$(VERSION) envsubst '$$VERSION' < doc/upbx.1.in | sed '/__COMMANDS_MAN__/r doc/cli_doc.man' | sed '/__COMMANDS_MAN__/d' | sed '/__LICENSE_MAN__/r doc/license.man' | sed '/__LICENSE_MAN__/d' > $(BIN).1
 
 # .cc.o:
@@ -106,37 +106,14 @@ $(BIN).1: doc/upbx.1.in doc/cli_doc.man doc/license.man
 $(BIN): $(OBJ)
 	${CC} ${OBJ} ${CFLAGS} ${LDFLAGS} -o $@
 
-# ---- Test targets (finwo/assert) ----
-TEST_BINS:=test_md5 test_sdp_parse test_sip_parse test_config test_resp test_digest_auth
-
-test_md5: src/test/test_md5.o src/common/md5.o
-	$(CC) $^ $(CFLAGS) -o $@
-
-test_sdp_parse: src/test/test_sdp_parse.o src/AppModule/util/sdp_parse.o
-	$(CC) $^ $(CFLAGS) -o $@
-
-test_sip_parse: src/test/test_sip_parse.o src/AppModule/sip_parse.o src/AppModule/pbx/registration.o src/config.o src/RespModule/resp.o src/PluginModule/plugin.o lib/benhoyt/inih/ini.o lib/cofyc/argparse/argparse.o lib/rxi/log/src/log.o src/common/socket_util.o
-	$(CC) $^ $(CFLAGS) -o $@
-
-test_config: src/test/test_config.o src/config.o src/RespModule/resp.o lib/benhoyt/inih/ini.o lib/rxi/log/src/log.o
-	$(CC) $^ $(CFLAGS) -o $@
-
-test_resp: src/test/test_resp.o src/RespModule/resp.o
-	$(CC) $^ $(CFLAGS) -o $@
-
-test_digest_auth: src/test/test_digest_auth.o src/common/digest_auth.o src/common/md5.o
-	$(CC) $^ $(CFLAGS) -o $@
-
 .PHONY: test
-test:
+test: $(BIN)
 	@node test/basic-forwarding.js
 	@sleep 2
 	@node test/listen-relearn.js
 
 .PHONY: clean
 clean:
-	rm -rf $(BIN) $(BIN).1 $(TEST_BINS)
+	rm -rf $(BIN) $(BIN).1
 	rm -rf $(OBJ)
-	rm -rf $(patsubst %,src/test/%.o,$(TEST_BINS:test_%=test_%))
-	rm -rf src/test/*.o
 	rm -rf doc/cli_doc.md doc/cli_doc.man doc/license.man
