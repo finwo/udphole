@@ -88,6 +88,25 @@ function connectApi(port) {
   });
 }
 
+function connectUnixApi(socketPath) {
+  return new Promise((resolve, reject) => {
+    const sock = net.createConnection({ path: socketPath, noDelay: true });
+    sock.setEncoding('utf8');
+    
+    const timeout = setTimeout(() => {
+      sock.destroy();
+      reject(new Error('Connection timeout'));
+    }, TIMEOUT);
+    
+    sock.on('connect', () => {
+      clearTimeout(timeout);
+      resolve(sock);
+    });
+    
+    sock.on('error', reject);
+  });
+}
+
 function encodeResp(...args) {
   const n = args.length;
   let cmd = `*${n}\r\n`;
@@ -217,6 +236,7 @@ module.exports = {
   spawnDaemon,
   killDaemon,
   connectApi,
+  connectUnixApi,
   apiCommand,
   createUdpEchoServer,
   sendUdp,
