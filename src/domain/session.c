@@ -15,11 +15,11 @@
 #include "rxi/log.h"
 #include "domain/protothreads.h"
 #include "domain/scheduler.h"
+#include "domain/config.h"
 #include "common/socket_util.h"
-#include "infrastructure/config.h"
+#include "common/resp.h"
 #include "tidwall/hashmap.h"
 #include "session.h"
-#include "interface/api/server.h"
 
 #define SESSION_HASH_SIZE 256
 #define BUFFER_SIZE 4096
@@ -60,10 +60,6 @@ typedef struct session {
 
 static session_t **sessions = NULL;
 static size_t sessions_count = 0;
-static char *advertise_addr = NULL;
-static int port_low = 7000;
-static int port_high = 7999;
-static int port_cur = 7000;
 static int running = 0;
 
 static session_t *find_session(const char *session_id) {
@@ -98,11 +94,12 @@ static socket_t *find_socket(session_t *s, const char *socket_id) {
 }
 
 static int alloc_port(void) {
-  for (int i = 0; i < port_high - port_low; i++) {
-    int port = port_cur + i;
-    if (port > port_high) port = port_low;
-    port_cur = port + 1;
-    if (port_cur > port_high) port_cur = port_low;
+  if (!domain_cfg) return 0;
+  for (int i = 0; i < domain_cfg->port_high - domain_cfg->port_low; i++) {
+    int port = domain_cfg->port_cur + i;
+    if (port > domain_cfg->port_high) port = domain_cfg->port_low;
+    domain_cfg->port_cur = port + 1;
+    if (domain_cfg->port_cur > domain_cfg->port_high) domain_cfg->port_cur = domain_cfg->port_low;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -515,285 +512,459 @@ static void spawn_session_pt(session_t *s) {
   s->task = (struct pt_task *)(intptr_t)domain_schedmod_pt_create(session_pt, s);
 }
 
-static char cmd_session_create(api_client_t *c, char **args, int nargs) {
-  if (nargs < 2) {
-    return api_write_err(c, "wrong number of arguments for 'session.create'") ? 1 : 0;
+resp_object *domain_session_create(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 2) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.create'");
+    return err;
   }
 
-  const char *session_id = args[1];
+  const char *session_id = NULL;
+  if (args->u.arr.n > 1 && args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+
+  if (!session_id) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.create'");
+    return err;
+  }
+
   int idle_expiry = 0;
-  if (nargs >= 3 && args[2] && args[2][0] != '\0') {
-    idle_expiry = atoi(args[2]);
+  if (args->u.arr.n >= 3 && args->u.arr.elem[2].type == RESPT_BULK && args->u.arr.elem[2].u.s) {
+    idle_expiry = atoi(args->u.arr.elem[2].u.s);
   }
 
   session_t *s = create_session(session_id, idle_expiry);
   if (!s) {
-    return api_write_err(c, "failed to create session") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR failed to create session");
+    return err;
   }
 
   spawn_session_pt(s);
-  return api_write_ok(c) ? 1 : 0;
+
+  resp_object *res = resp_array_init();
+  resp_array_append_simple(res, "OK");
+  return res;
 }
 
-static char cmd_session_list(api_client_t *c, char **args, int nargs) {
+resp_object *domain_session_list(resp_object *args) {
   (void)args;
-  if (nargs != 1) {
-    return api_write_err(c, "wrong number of arguments for 'session.list'") ? 1 : 0;
-  }
 
-  if (!sessions) {
-    return api_write_array(c, 0) ? 1 : 0;
-  }
-
-  if (!api_write_array(c, sessions_count)) return 0;
+  resp_object *res = resp_array_init();
+  if (!res) return NULL;
 
   for (size_t i = 0; i < sessions_count; i++) {
     session_t *s = sessions[i];
     if (!s) continue;
-    if (!api_write_bulk_cstr(c, s->session_id)) return 0;
+    resp_array_append_bulk(res, s->session_id);
   }
 
-  return 1;
+  return res;
 }
 
-static char cmd_session_info(api_client_t *c, char **args, int nargs) {
-  if (nargs != 2) {
-    return api_write_err(c, "wrong number of arguments for 'session.info'") ? 1 : 0;
+resp_object *domain_session_info(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 2) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.info'");
+    return err;
   }
 
-  const char *session_id = args[1];
+  const char *session_id = NULL;
+  if (args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+
+  if (!session_id) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.info'");
+    return err;
+  }
+
   session_t *s = find_session(session_id);
   if (!s) {
-    return api_write_err(c, "session not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR session not found");
+    return err;
   }
 
-  size_t num_items = 8;
-  if (!api_write_array(c, num_items)) return 0;
+  resp_object *res = resp_array_init();
+  if (!res) return NULL;
 
-  if (!api_write_bulk_cstr(c, "session_id")) return 0;
-  if (!api_write_bulk_cstr(c, s->session_id)) return 0;
+  resp_array_append_bulk(res, "session_id");
+  resp_array_append_bulk(res, s->session_id);
 
-  if (!api_write_bulk_cstr(c, "created")) return 0;
-  if (!api_write_bulk_int(c, (int)s->created)) return 0;
+  resp_array_append_bulk(res, "created");
+  resp_array_append_int(res, (long long)s->created);
 
-  if (!api_write_bulk_cstr(c, "last_activity")) return 0;
-  if (!api_write_bulk_int(c, (int)s->last_activity)) return 0;
+  resp_array_append_bulk(res, "last_activity");
+  resp_array_append_int(res, (long long)s->last_activity);
 
-  if (!api_write_bulk_cstr(c, "idle_expiry")) return 0;
-  if (!api_write_bulk_int(c, (int)s->idle_expiry)) return 0;
+  resp_array_append_bulk(res, "idle_expiry");
+  resp_array_append_int(res, (long long)s->idle_expiry);
 
-  if (!api_write_bulk_cstr(c, "sockets")) return 0;
-  if (!api_write_array(c, s->sockets_count)) return 0;
+  resp_array_append_bulk(res, "sockets");
+  resp_object *sockets_arr = resp_array_init();
   for (size_t i = 0; i < s->sockets_count; i++) {
     socket_t *sock = s->sockets[i];
     if (!sock) continue;
-    if (!api_write_bulk_cstr(c, sock->socket_id)) return 0;
+    resp_array_append_bulk(sockets_arr, sock->socket_id);
   }
+  resp_array_append_obj(res, sockets_arr);
 
-  if (!api_write_bulk_cstr(c, "forwards")) return 0;
-  if (!api_write_array(c, s->forwards_count * 2)) return 0;
+  resp_array_append_bulk(res, "forwards");
+  resp_object *forwards_arr = resp_array_init();
   for (size_t i = 0; i < s->forwards_count; i++) {
-    if (!api_write_bulk_cstr(c, s->forwards[i].src_socket_id)) return 0;
-    if (!api_write_bulk_cstr(c, s->forwards[i].dst_socket_id)) return 0;
+    resp_array_append_bulk(forwards_arr, s->forwards[i].src_socket_id);
+    resp_array_append_bulk(forwards_arr, s->forwards[i].dst_socket_id);
   }
+  resp_array_append_obj(res, forwards_arr);
 
-  if (!api_write_bulk_cstr(c, "marked_for_deletion")) return 0;
-  if (!api_write_int(c, s->marked_for_deletion)) return 0;
+  resp_array_append_bulk(res, "marked_for_deletion");
+  resp_array_append_int(res, s->marked_for_deletion);
 
-  return 1;
+  return res;
 }
 
-static char cmd_session_destroy(api_client_t *c, char **args, int nargs) {
-  if (nargs != 2) {
-    return api_write_err(c, "wrong number of arguments for 'session.destroy'") ? 1 : 0;
+resp_object *domain_session_destroy(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 2) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.destroy'");
+    return err;
   }
 
-  const char *session_id = args[1];
+  const char *session_id = NULL;
+  if (args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+
+  if (!session_id) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.destroy'");
+    return err;
+  }
+
   session_t *s = find_session(session_id);
   if (!s) {
-    return api_write_err(c, "session not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR session not found");
+    return err;
   }
 
   destroy_session(s);
-  return api_write_ok(c) ? 1 : 0;
+
+  resp_object *res = resp_array_init();
+  resp_array_append_simple(res, "OK");
+  return res;
 }
 
-static char cmd_socket_create_listen(api_client_t *c, char **args, int nargs) {
-  if (nargs != 3) {
-    return api_write_err(c, "wrong number of arguments for 'session.socket.create.listen'") ? 1 : 0;
+resp_object *domain_socket_create_listen(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 3) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.create.listen'");
+    return err;
   }
 
-  const char *session_id = args[1];
-  const char *socket_id = args[2];
+  const char *session_id = NULL;
+  const char *socket_id = NULL;
+
+  if (args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+  if (args->u.arr.elem[2].type == RESPT_BULK) {
+    socket_id = args->u.arr.elem[2].u.s;
+  }
+
+  if (!session_id || !socket_id) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.create.listen'");
+    return err;
+  }
 
   session_t *s = find_session(session_id);
   if (!s) {
-    return api_write_err(c, "session not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR session not found");
+    return err;
   }
 
   socket_t *sock = create_listen_socket(s, socket_id);
   if (!sock) {
-    return api_write_err(c, "failed to create socket") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR failed to create socket");
+    return err;
   }
 
-  if (!api_write_array(c, 2)) return 0;
-  if (!api_write_bulk_int(c, sock->local_port)) return 0;
-  if (!api_write_bulk_cstr(c, advertise_addr)) return 0;
-
-  return 1;
+  resp_object *res = resp_array_init();
+  resp_array_append_int(res, sock->local_port);
+  resp_array_append_bulk(res, domain_cfg && domain_cfg->advertise_addr ? domain_cfg->advertise_addr : "");
+  return res;
 }
 
-static char cmd_socket_create_connect(api_client_t *c, char **args, int nargs) {
-  if (nargs != 5) {
-    return api_write_err(c, "wrong number of arguments for 'session.socket.create.connect'") ? 1 : 0;
+resp_object *domain_socket_create_connect(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 5) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.create.connect'");
+    return err;
   }
 
-  const char *session_id = args[1];
-  const char *socket_id = args[2];
-  const char *ip = args[3];
-  int port = atoi(args[4]);
+  const char *session_id = NULL;
+  const char *socket_id = NULL;
+  const char *ip = NULL;
+  const char *port_str = NULL;
+
+  if (args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+  if (args->u.arr.elem[2].type == RESPT_BULK) {
+    socket_id = args->u.arr.elem[2].u.s;
+  }
+  if (args->u.arr.elem[3].type == RESPT_BULK) {
+    ip = args->u.arr.elem[3].u.s;
+  }
+  if (args->u.arr.elem[4].type == RESPT_BULK) {
+    port_str = args->u.arr.elem[4].u.s;
+  }
+
+  if (!session_id || !socket_id || !ip || !port_str) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.create.connect'");
+    return err;
+  }
+
+  int port = atoi(port_str);
 
   session_t *s = find_session(session_id);
   if (!s) {
-    return api_write_err(c, "session not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR session not found");
+    return err;
   }
 
   socket_t *sock = create_connect_socket(s, socket_id, ip, port);
   if (!sock) {
-    return api_write_err(c, "failed to create socket") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR failed to create socket");
+    return err;
   }
 
-  if (!api_write_array(c, 2)) return 0;
-  if (!api_write_bulk_int(c, sock->local_port)) return 0;
-  if (!api_write_bulk_cstr(c, advertise_addr)) return 0;
-
-  return 1;
+  resp_object *res = resp_array_init();
+  resp_array_append_int(res, sock->local_port);
+  resp_array_append_bulk(res, domain_cfg && domain_cfg->advertise_addr ? domain_cfg->advertise_addr : "");
+  return res;
 }
 
-static char cmd_socket_destroy(api_client_t *c, char **args, int nargs) {
-  if (nargs != 3) {
-    return api_write_err(c, "wrong number of arguments for 'session.socket.destroy'") ? 1 : 0;
+resp_object *domain_socket_destroy(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 3) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.destroy'");
+    return err;
   }
 
-  const char *session_id = args[1];
-  const char *socket_id = args[2];
+  const char *session_id = NULL;
+  const char *socket_id = NULL;
+
+  if (args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+  if (args->u.arr.elem[2].type == RESPT_BULK) {
+    socket_id = args->u.arr.elem[2].u.s;
+  }
+
+  if (!session_id || !socket_id) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.socket.destroy'");
+    return err;
+  }
 
   session_t *s = find_session(session_id);
   if (!s) {
-    return api_write_err(c, "session not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR session not found");
+    return err;
   }
 
   if (destroy_socket(s, socket_id) != 0) {
-    return api_write_err(c, "socket not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR socket not found");
+    return err;
   }
 
-  return api_write_ok(c) ? 1 : 0;
+  resp_object *res = resp_array_init();
+  resp_array_append_simple(res, "OK");
+  return res;
 }
 
-static char cmd_forward_list(api_client_t *c, char **args, int nargs) {
-  if (nargs != 2) {
-    return api_write_err(c, "wrong number of arguments for 'session.forward.list'") ? 1 : 0;
+resp_object *domain_forward_list(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 2) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.list'");
+    return err;
   }
 
-  const char *session_id = args[1];
+  const char *session_id = NULL;
+  if (args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+
+  if (!session_id) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.list'");
+    return err;
+  }
+
   session_t *s = find_session(session_id);
   if (!s) {
-    return api_write_err(c, "session not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR session not found");
+    return err;
   }
 
-  if (!api_write_array(c, s->forwards_count * 2)) return 0;
+  resp_object *res = resp_array_init();
   for (size_t i = 0; i < s->forwards_count; i++) {
-    if (!api_write_bulk_cstr(c, s->forwards[i].src_socket_id)) return 0;
-    if (!api_write_bulk_cstr(c, s->forwards[i].dst_socket_id)) return 0;
+    resp_array_append_bulk(res, s->forwards[i].src_socket_id);
+    resp_array_append_bulk(res, s->forwards[i].dst_socket_id);
   }
-
-  return 1;
+  return res;
 }
 
-static char cmd_forward_create(api_client_t *c, char **args, int nargs) {
-  if (nargs != 4) {
-    return api_write_err(c, "wrong number of arguments for 'session.forward.create'") ? 1 : 0;
+resp_object *domain_forward_create(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 4) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.create'");
+    return err;
   }
 
-  const char *session_id = args[1];
-  const char *src_socket_id = args[2];
-  const char *dst_socket_id = args[3];
+  const char *session_id = NULL;
+  const char *src_socket_id = NULL;
+  const char *dst_socket_id = NULL;
+
+  if (args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+  if (args->u.arr.elem[2].type == RESPT_BULK) {
+    src_socket_id = args->u.arr.elem[2].u.s;
+  }
+  if (args->u.arr.elem[3].type == RESPT_BULK) {
+    dst_socket_id = args->u.arr.elem[3].u.s;
+  }
+
+  if (!session_id || !src_socket_id || !dst_socket_id) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.create'");
+    return err;
+  }
 
   session_t *s = find_session(session_id);
   if (!s) {
-    return api_write_err(c, "session not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR session not found");
+    return err;
   }
 
   socket_t *src = find_socket(s, src_socket_id);
   if (!src) {
-    return api_write_err(c, "source socket not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR source socket not found");
+    return err;
   }
 
   socket_t *dst = find_socket(s, dst_socket_id);
   if (!dst) {
-    return api_write_err(c, "destination socket not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR destination socket not found");
+    return err;
   }
 
   if (add_forward(s, src_socket_id, dst_socket_id) != 0) {
-    return api_write_err(c, "failed to add forward") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR failed to add forward");
+    return err;
   }
 
   log_debug("udphole: created forward %s -> %s in session %s", src_socket_id, dst_socket_id, session_id);
-  return api_write_ok(c) ? 1 : 0;
+
+  resp_object *res = resp_array_init();
+  resp_array_append_simple(res, "OK");
+  return res;
 }
 
-static char cmd_forward_destroy(api_client_t *c, char **args, int nargs) {
-  if (nargs != 4) {
-    return api_write_err(c, "wrong number of arguments for 'session.forward.destroy'") ? 1 : 0;
+resp_object *domain_forward_destroy(resp_object *args) {
+  if (!args || args->type != RESPT_ARRAY || args->u.arr.n < 4) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.destroy'");
+    return err;
   }
 
-  const char *session_id = args[1];
-  const char *src_socket_id = args[2];
-  const char *dst_socket_id = args[3];
+  const char *session_id = NULL;
+  const char *src_socket_id = NULL;
+  const char *dst_socket_id = NULL;
+
+  if (args->u.arr.elem[1].type == RESPT_BULK) {
+    session_id = args->u.arr.elem[1].u.s;
+  }
+  if (args->u.arr.elem[2].type == RESPT_BULK) {
+    src_socket_id = args->u.arr.elem[2].u.s;
+  }
+  if (args->u.arr.elem[3].type == RESPT_BULK) {
+    dst_socket_id = args->u.arr.elem[3].u.s;
+  }
+
+  if (!session_id || !src_socket_id || !dst_socket_id) {
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR wrong number of arguments for 'session.forward.destroy'");
+    return err;
+  }
 
   session_t *s = find_session(session_id);
   if (!s) {
-    return api_write_err(c, "session not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR session not found");
+    return err;
   }
 
   if (remove_forward(s, src_socket_id, dst_socket_id) != 0) {
-    return api_write_err(c, "forward not found") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR forward not found");
+    return err;
   }
 
-  return api_write_ok(c) ? 1 : 0;
+  resp_object *res = resp_array_init();
+  resp_array_append_simple(res, "OK");
+  return res;
 }
 
-static char cmd_system_load(api_client_t *c, char **args, int nargs) {
+resp_object *domain_system_load(resp_object *args) {
   (void)args;
-  if (nargs != 1) {
-    return api_write_err(c, "wrong number of arguments for 'system.load'") ? 1 : 0;
-  }
 
   double loadavg[3];
   if (getloadavg(loadavg, 3) != 3) {
-    return api_write_err(c, "failed to get load average") ? 1 : 0;
+    resp_object *err = resp_array_init();
+    resp_array_append_simple(err, "ERR failed to get load average");
+    return err;
   }
 
-  if (!api_write_array(c, 6)) return 0;
-  if (!api_write_bulk_cstr(c, "1min")) return 0;
+  resp_object *res = resp_array_init();
   char buf[64];
-  snprintf(buf, sizeof(buf), "%.2f", loadavg[0]);
-  if (!api_write_bulk_cstr(c, buf)) return 0;
-  if (!api_write_bulk_cstr(c, "5min")) return 0;
-  snprintf(buf, sizeof(buf), "%.2f", loadavg[1]);
-  if (!api_write_bulk_cstr(c, buf)) return 0;
-  if (!api_write_bulk_cstr(c, "15min")) return 0;
-  snprintf(buf, sizeof(buf), "%.2f", loadavg[2]);
-  if (!api_write_bulk_cstr(c, buf)) return 0;
 
-  return 1;
+  resp_array_append_bulk(res, "1min");
+  snprintf(buf, sizeof(buf), "%.2f", loadavg[0]);
+  resp_array_append_bulk(res, buf);
+
+  resp_array_append_bulk(res, "5min");
+  snprintf(buf, sizeof(buf), "%.2f", loadavg[1]);
+  resp_array_append_bulk(res, buf);
+
+  resp_array_append_bulk(res, "15min");
+  snprintf(buf, sizeof(buf), "%.2f", loadavg[2]);
+  resp_array_append_bulk(res, buf);
+
+  return res;
 }
 
-static char cmd_session_count(api_client_t *c, char **args, int nargs) {
+resp_object *domain_session_count(resp_object *args) {
   (void)args;
-  if (nargs != 1) {
-    return api_write_err(c, "wrong number of arguments for 'session.count'") ? 1 : 0;
-  }
 
   size_t count = 0;
   for (size_t i = 0; i < sessions_count; i++) {
@@ -802,23 +973,11 @@ static char cmd_session_count(api_client_t *c, char **args, int nargs) {
     }
   }
 
-  return api_write_int(c, (int)count) ? 1 : 0;
-}
-
-static void register_session_commands(void) {
-  api_register_cmd("session.create", cmd_session_create);
-  api_register_cmd("session.list", cmd_session_list);
-  api_register_cmd("session.info", cmd_session_info);
-  api_register_cmd("session.destroy", cmd_session_destroy);
-  api_register_cmd("session.socket.create.listen", cmd_socket_create_listen);
-  api_register_cmd("session.socket.create.connect", cmd_socket_create_connect);
-  api_register_cmd("session.socket.destroy", cmd_socket_destroy);
-  api_register_cmd("session.forward.list", cmd_forward_list);
-  api_register_cmd("session.forward.create", cmd_forward_create);
-  api_register_cmd("session.forward.destroy", cmd_forward_destroy);
-  api_register_cmd("session.count", cmd_session_count);
-  api_register_cmd("system.load", cmd_system_load);
-  log_info("udphole: registered session.* commands");
+  resp_object *res = malloc(sizeof(resp_object));
+  if (!res) return NULL;
+  res->type = RESPT_INT;
+  res->u.i = (long long)count;
+  return res;
 }
 
 PT_THREAD(session_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
@@ -826,30 +985,10 @@ PT_THREAD(session_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
   log_trace("session_manager: protothread entry");
   PT_BEGIN(pt);
 
-  PT_WAIT_UNTIL(pt, global_cfg);
+  PT_WAIT_UNTIL(pt, domain_cfg);
 
-  resp_object *cfg_sec = resp_map_get(global_cfg, "udphole");
-  if (!cfg_sec) {
-    log_info("udphole: no [udphole] section in config, not starting");
-    PT_EXIT(pt);
-  }
-
-  const char *ports_str = resp_map_get_string(cfg_sec, "ports");
-  if (ports_str) {
-    sscanf(ports_str, "%d-%d", &port_low, &port_high);
-    if (port_low <= 0) port_low = 7000;
-    if (port_high <= port_low) port_high = port_low + 999;
-  }
-  port_cur = port_low;
-
-  const char *advertise_cfg = resp_map_get_string(cfg_sec, "advertise");
-  if (advertise_cfg) {
-    advertise_addr = strdup(advertise_cfg);
-  }
-
-  register_session_commands();
   running = 1;
-  log_info("udphole: manager started with port range %d-%d", port_low, port_high);
+  log_info("udphole: manager started with port range %d-%d", domain_cfg->port_low, domain_cfg->port_high);
 
   int64_t last_cleanup = 0;
 
@@ -871,18 +1010,5 @@ PT_THREAD(session_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
     }
   }
 
-  free(advertise_addr);
-  advertise_addr = NULL;
-
   PT_END(pt);
-}
-
-void domain_setup(void) {
-  extern void cli_register_command(const char *name, const char *description, int (*fn)(int, const char **));
-  extern int cli_cmd_daemon(int argc, const char **argv);
-  cli_register_command(
-    "daemon",
-    "Run the udphole daemon",
-    cli_cmd_daemon
-  );
 }

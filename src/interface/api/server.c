@@ -26,7 +26,7 @@
 #include "common/socket_util.h"
 #include "infrastructure/config.h"
 #include "interface/api/server.h"
-#include "infrastructure/resp.h"
+#include "common/resp.h"
 
 struct pt_task;
 PT_THREAD(api_client_pt(struct pt *pt, int64_t timestamp, struct pt_task *task));
@@ -56,8 +56,14 @@ typedef struct {
   char       (*func)(api_client_t *c, char **args, int nargs);
 } api_cmd_entry;
 
+typedef struct {
+  const char  *name;
+  domain_cmd_fn func;
+} domain_cmd_entry;
+
 static char     *current_listen = NULL;
 static struct hashmap  *cmd_map = NULL;
+static struct hashmap  *domain_cmd_map = NULL;
 
 typedef struct {
   int      *server_fds;
@@ -308,6 +314,25 @@ void api_register_cmd(const char *name, char (*func)(api_client_t *, char **, in
   log_trace("api: registered command '%s'", name);
 }
 
+static uint64_t domain_cmd_hash(const void *item, uint64_t seed0, uint64_t seed1) {
+  const domain_cmd_entry *cmd = item;
+  return hashmap_sip(cmd->name, strlen(cmd->name), seed0, seed1);
+}
+
+static int domain_cmd_compare(const void *a, const void *b, void *udata) {
+  (void)udata;
+  const domain_cmd_entry *ca = a;
+  const domain_cmd_entry *cb = b;
+  return strcasecmp(ca->name, cb->name);
+}
+
+void api_register_domain_cmd(const char *name, domain_cmd_fn func) {
+  if (!domain_cmd_map)
+    domain_cmd_map = hashmap_new(sizeof(domain_cmd_entry), 0, 0, 0, domain_cmd_hash, domain_cmd_compare, NULL, NULL);
+  hashmap_set(domain_cmd_map, &(domain_cmd_entry){ .name = name, .func = func });
+  log_trace("api: registered domain command '%s'", name);
+}
+
 static char cmdAUTH(api_client_t *c, char **args, int nargs) {
   if (nargs != 3) {
     api_write_err(c, "wrong number of arguments for 'auth' command (AUTH username password)");
@@ -349,25 +374,44 @@ static bool is_builtin(const char *name);
 
 static char cmdCOMMAND(api_client_t *c, char **args, int nargs) {
   (void)args;
-  if (!cmd_map)
+  if (!cmd_map && !domain_cmd_map)
     return api_write_array(c, 0) ? 1 : 0;
 
   resp_object *result = resp_array_init();
   if (!result) return 0;
 
-  size_t iter = 0;
-  void *item;
-  while (hashmap_iter(cmd_map, &iter, &item)) {
-    const api_cmd_entry *e = item;
-    if (!is_builtin(e->name) && !user_has_permit(c, e->name))
-      continue;
+  if (domain_cmd_map) {
+    size_t iter = 0;
+    void *item;
+    while (hashmap_iter(domain_cmd_map, &iter, &item)) {
+      const domain_cmd_entry *e = item;
+      if (!user_has_permit(c, e->name))
+        continue;
 
-    resp_array_append_bulk(result, e->name);
-    resp_object *meta = resp_array_init();
-    if (!meta) { resp_free(result); return 0; }
-    resp_array_append_bulk(meta, "summary");
-    resp_array_append_bulk(meta, "UDP hole proxy command");
-    resp_array_append_obj(result, meta);
+      resp_array_append_bulk(result, e->name);
+      resp_object *meta = resp_array_init();
+      if (!meta) { resp_free(result); return 0; }
+      resp_array_append_bulk(meta, "summary");
+      resp_array_append_bulk(meta, "UDP hole proxy command");
+      resp_array_append_obj(result, meta);
+    }
+  }
+
+  if (cmd_map) {
+    size_t iter = 0;
+    void *item;
+    while (hashmap_iter(cmd_map, &iter, &item)) {
+      const api_cmd_entry *e = item;
+      if (!is_builtin(e->name) && !user_has_permit(c, e->name))
+        continue;
+
+      resp_array_append_bulk(result, e->name);
+      resp_object *meta = resp_array_init();
+      if (!meta) { resp_free(result); return 0; }
+      resp_array_append_bulk(meta, "summary");
+      resp_array_append_bulk(meta, "UDP hole proxy command");
+      resp_array_append_obj(result, meta);
+    }
   }
 
   char *out_buf = NULL;
@@ -401,6 +445,44 @@ static void dispatch_command(api_client_t *c, char **args, int nargs) {
   if (nargs <= 0) return;
 
   for (char *p = args[0]; *p; p++) *p = (char)tolower((unsigned char)*p);
+
+  const domain_cmd_entry *dcmd = hashmap_get(domain_cmd_map, &(domain_cmd_entry){ .name = args[0] });
+  if (dcmd) {
+    if (!is_builtin(args[0])) {
+      if (!user_has_permit(c, args[0])) {
+        api_write_err(c, "no permission");
+        return;
+      }
+    }
+
+    resp_object *domain_args = resp_array_init();
+    if (!domain_args) return;
+
+    for (int i = 0; i < nargs; i++) {
+      resp_array_append_bulk(domain_args, args[i]);
+    }
+
+    resp_object *result = dcmd->func(domain_args);
+    resp_free(domain_args);
+
+    if (!result) {
+      api_write_err(c, "command failed");
+      return;
+    }
+
+    char *out_buf = NULL;
+    size_t out_len = 0;
+    if (resp_serialize(result, &out_buf, &out_len) != 0 || !out_buf) {
+      resp_free(result);
+      api_write_err(c, "command failed");
+      return;
+    }
+    resp_free(result);
+
+    api_write_raw(c, out_buf, out_len);
+    free(out_buf);
+    return;
+  }
 
   const api_cmd_entry *cmd = hashmap_get(cmd_map, &(api_cmd_entry){ .name = args[0] });
   if (!cmd) {
@@ -497,9 +579,10 @@ PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
     init_builtins();
     udata->server_fds = create_listen_socket(current_listen);
     if (!udata->server_fds) {
+      log_fatal("api: failed to listen on %s", current_listen);
       free(current_listen);
       current_listen = NULL;
-      PT_EXIT(pt);
+      exit(1);
     }
   }
 
@@ -531,6 +614,10 @@ PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
   if (cmd_map) {
     hashmap_free(cmd_map);
     cmd_map = NULL;
+  }
+  if (domain_cmd_map) {
+    hashmap_free(domain_cmd_map);
+    domain_cmd_map = NULL;
   }
 
   PT_END(pt);

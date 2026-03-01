@@ -9,11 +9,29 @@
 #include "rxi/log.h"
 
 #include "infrastructure/config.h"
+#include "common/resp.h"
 #include "../common.h"
 #include "domain/scheduler.h"
+#include "domain/config.h"
 #include "daemon.h"
 #include "interface/api/server.h"
 #include "domain/session.h"
+
+static void register_domain_commands(void) {
+  api_register_domain_cmd("session.create", domain_session_create);
+  api_register_domain_cmd("session.list", domain_session_list);
+  api_register_domain_cmd("session.info", domain_session_info);
+  api_register_domain_cmd("session.destroy", domain_session_destroy);
+  api_register_domain_cmd("session.socket.create.listen", domain_socket_create_listen);
+  api_register_domain_cmd("session.socket.create.connect", domain_socket_create_connect);
+  api_register_domain_cmd("session.socket.destroy", domain_socket_destroy);
+  api_register_domain_cmd("session.forward.list", domain_forward_list);
+  api_register_domain_cmd("session.forward.create", domain_forward_create);
+  api_register_domain_cmd("session.forward.destroy", domain_forward_destroy);
+  api_register_domain_cmd("session.count", domain_session_count);
+  api_register_domain_cmd("system.load", domain_system_load);
+  log_info("udphole: registered session.* commands");
+}
 
 static int do_daemonize(void) {
   pid_t pid = fork();
@@ -66,6 +84,26 @@ int cli_cmd_daemon(int argc, const char **argv) {
   if (!no_daemonize_flag && daemonize_flag) {
     do_daemonize();
   }
+
+  domain_config_init();
+
+  if (global_cfg) {
+    resp_object *cfg_sec = resp_map_get(global_cfg, "udphole");
+    if (cfg_sec) {
+      const char *ports_str = resp_map_get_string(cfg_sec, "ports");
+      if (ports_str) {
+        int port_low = 7000, port_high = 7999;
+        sscanf(ports_str, "%d-%d", &port_low, &port_high);
+        domain_config_set_ports(port_low, port_high);
+      }
+      const char *advertise = resp_map_get_string(cfg_sec, "advertise");
+      if (advertise) {
+        domain_config_set_advertise(advertise);
+      }
+    }
+  }
+
+  register_domain_commands();
 
   log_info("udphole: starting daemon");
 

@@ -3,7 +3,7 @@
 #include "benhoyt/inih.h"
 #include "rxi/log.h"
 #include "infrastructure/config.h"
-#include "infrastructure/resp.h"
+#include "common/resp.h"
 
 resp_object *global_cfg = NULL;
 resp_object *pending_cfg = NULL;

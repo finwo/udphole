@@ -31,6 +31,8 @@ void resp_map_set(resp_object *map, const char *key, resp_object *value);
 
 resp_object *resp_read(int fd);
 
+resp_object *resp_read_buf(const char *buf, size_t len);
+
 int resp_encode_array(int argc, const resp_object *const *argv, char **out_buf, size_t *out_len);
 
 int resp_serialize(const resp_object *o, char **out_buf, size_t *out_len);
