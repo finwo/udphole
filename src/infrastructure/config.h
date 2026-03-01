@@ -1,7 +1,7 @@
 #ifndef UDPHOLE_CONFIG_H
 #define UDPHOLE_CONFIG_H
 
-#include "infrastructure/resp.h"
+#include "common/resp.h"
 
 extern resp_object *global_cfg;
 extern resp_object *pending_cfg;

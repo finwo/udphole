@@ -13,13 +13,12 @@ extern "C" {
 
 #include "interface/cli/common.h"
 #include "interface/cli/command/list_commands.h"
+#include "interface/cli/command/daemon.h"
 #include "infrastructure/config.h"
 
 #ifdef __cplusplus
 }
 #endif
-
-extern void domain_setup(void);
 
 #define INCBIN_SILENCE_BITCODE_WARNING
 #include "graphitemaster/incbin.h"
@@ -175,7 +174,11 @@ int main(int argc, const char **argv) {
     cli_cmd_list_commands
   );
 
-  domain_setup();
+  cli_register_command(
+    "daemon",
+    "Run the udphole daemon",
+    cli_cmd_daemon
+  );
 
   struct argparse argparse;
   struct argparse_option options[] = {

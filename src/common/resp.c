@@ -5,12 +5,118 @@
 #include <errno.h>
 
 #include "rxi/log.h"
-#include "infrastructure/resp.h"
+#include "common/resp.h"
 
 #define MAX_BULK_LEN    (256 * 1024)
 #define LINE_BUF        4096
 
 static void resp_free_internal(resp_object *o);
+
+static int resp_read_byte_from_buf(const char **buf, size_t *len) {
+  if (*len < 1) return -1;
+  unsigned char c = (unsigned char)(*buf)[0];
+  *buf += 1;
+  *len -= 1;
+  return (int)c;
+}
+
+static int resp_read_line_from_buf(const char **buf, size_t *len, char *out, size_t out_size) {
+  size_t i = 0;
+  int prev = -1;
+  while (i + 1 < out_size) {
+    if (*len < 1) return -1;
+    int b = (int)(unsigned char)(*buf)[0];
+    *buf += 1;
+    *len -= 1;
+    if (prev == '\r' && b == '\n') {
+      out[i - 1] = '\0';
+      return 0;
+    }
+    prev = b;
+    out[i++] = (char)b;
+  }
+  return -1;
+}
+
+resp_object *resp_read_buf(const char *buf, size_t len) {
+  const char *p = buf;
+  size_t remaining = len;
+
+  int type_c = resp_read_byte_from_buf(&p, &remaining);
+  if (type_c < 0) return NULL;
+  if (type_c == -2) return NULL;
+  resp_object *o = calloc(1, sizeof(resp_object));
+  if (!o) return NULL;
+  char line[LINE_BUF];
+  switch ((char)type_c) {
+    case '+':
+      o->type = RESPT_SIMPLE;
+      if (resp_read_line_from_buf(&p, &remaining, line, sizeof(line)) != 0) { free(o); return NULL; }
+      o->u.s = strdup(line);
+      break;
+    case '-':
+      o->type = RESPT_ERROR;
+      if (resp_read_line_from_buf(&p, &remaining, line, sizeof(line)) != 0) { free(o); return NULL; }
+      o->u.s = strdup(line);
+      break;
+    case ':': {
+      if (resp_read_line_from_buf(&p, &remaining, line, sizeof(line)) != 0) { free(o); return NULL; }
+      o->type = RESPT_INT;
+      o->u.i = (long long)strtoll(line, NULL, 10);
+      break;
+    }
+    case '$': {
+      if (resp_read_line_from_buf(&p, &remaining, line, sizeof(line)) != 0) { free(o); return NULL; }
+      long blen = strtol(line, NULL, 10);
+      if (blen < 0 || blen > (long)MAX_BULK_LEN) { free(o); return NULL; }
+      o->type = RESPT_BULK;
+      if (blen == 0) {
+        o->u.s = strdup("");
+        if (resp_read_line_from_buf(&p, &remaining, line, sizeof(line)) != 0) { free(o->u.s); free(o); return NULL; }
+      } else {
+        if ((size_t)blen > remaining) { free(o); return NULL; }
+        o->u.s = malloc((size_t)blen + 1);
+        if (!o->u.s) { free(o); return NULL; }
+        memcpy(o->u.s, p, (size_t)blen);
+        p += blen;
+        remaining -= (size_t)blen;
+        o->u.s[blen] = '\0';
+        if (remaining < 2) { free(o->u.s); free(o); return NULL; }
+        if (p[0] != '\r' || p[1] != '\n') { free(o->u.s); free(o); return NULL; }
+        p += 2;
+        remaining -= 2;
+      }
+      break;
+    }
+    case '*': {
+      if (resp_read_line_from_buf(&p, &remaining, line, sizeof(line)) != 0) { free(o); return NULL; }
+      long n = strtol(line, NULL, 10);
+      if (n < 0 || n > 65536) { free(o); return NULL; }
+      o->type = RESPT_ARRAY;
+      o->u.arr.n = (size_t)n;
+      o->u.arr.elem = n ? calloc((size_t)n, sizeof(resp_object)) : NULL;
+      if (n && !o->u.arr.elem) { free(o); return NULL; }
+      for (size_t i = 0; i < (size_t)n; i++) {
+        resp_object *sub = resp_read_buf(p, remaining);
+        if (!sub) {
+          for (size_t j = 0; j < i; j++) resp_free_internal(&o->u.arr.elem[j]);
+          free(o->u.arr.elem);
+          free(o);
+          return NULL;
+        }
+        p += remaining - (sub ? remaining : 0);
+        remaining = 0;
+        o->u.arr.elem[i] = *sub;
+        free(sub);
+      }
+      break;
+    }
+    default:
+      free(o);
+      return NULL;
+  }
+  return o;
+}
 
 static int resp_read_byte(int fd) {
   unsigned char c;
