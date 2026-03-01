@@ -44,6 +44,9 @@ resp_object *resp_read(int fd);
 /* Encode array of argc objects. Caller must free(*out_buf). Returns 0 on success. */
 int resp_encode_array(int argc, const resp_object *const *argv, char **out_buf, size_t *out_len);
 
+/* Serialize single object. Caller must free(*out_buf). Returns 0 on success. */
+int resp_serialize(const resp_object *o, char **out_buf, size_t *out_len);
+
 /* Allocate an empty RESPT_ARRAY. Caller must resp_free. Returns NULL on alloc failure. */
 resp_object *resp_array_init(void);
 

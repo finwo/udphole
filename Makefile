@@ -78,7 +78,7 @@ override CPPFLAGS+=$(INCLUDES)
 override CPPFLAGS+=$(CFLAGS)
 
 .PHONY: default
-default: $(BIN) $(BIN).1
+default: $(BIN)
 
 # Stddoc: extract /// documentation from source to markdown for manpage
 STDDOC ?= stddoc
@@ -128,9 +128,10 @@ test_digest_auth: src/test/test_digest_auth.o src/common/digest_auth.o src/commo
 	$(CC) $^ $(CFLAGS) -o $@
 
 .PHONY: test
-test: $(TEST_BINS)
-	@for t in $(TEST_BINS); do echo "--- $$t ---"; ./$$t || exit 1; done
-	@echo "All tests passed."
+test:
+	@node test/basic-forwarding.js
+	@sleep 2
+	@node test/listen-relearn.js
 
 .PHONY: clean
 clean:

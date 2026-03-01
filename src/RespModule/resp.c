@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include "rxi/log.h"
 #include "RespModule/resp.h"
@@ -16,8 +17,12 @@ static void resp_free_internal(resp_object *o);
 
 static int resp_read_byte(int fd) {
   unsigned char c;
-  if (read(fd, &c, 1) != 1)
+  ssize_t n = read(fd, &c, 1);
+  if (n != 1) {
+    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+      return -2;
     return -1;
+  }
   return (int)c;
 }
 
@@ -40,6 +45,7 @@ static int resp_read_line(int fd, char *buf, size_t buf_size) {
 resp_object *resp_read(int fd) {
   int type_c = resp_read_byte(fd);
   if (type_c < 0) return NULL;
+  if (type_c == -2) return NULL;  // EAGAIN - no data (non-blocking)
   resp_object *o = calloc(1, sizeof(resp_object));
   if (!o) return NULL;
   char line[LINE_BUF];
@@ -259,6 +265,20 @@ int resp_encode_array(int argc, const resp_object *const *argv, char **out_buf, 
       free(buf);
       return -1;
     }
+  }
+  *out_buf = buf;
+  *out_len = len;
+  return 0;
+}
+
+int resp_serialize(const resp_object *o, char **out_buf, size_t *out_len) {
+  size_t cap = 64;
+  size_t len = 0;
+  char *buf = malloc(cap);
+  if (!buf) return -1;
+  if (resp_append_object(&buf, &cap, &len, o) != 0) {
+    free(buf);
+    return -1;
   }
   *out_buf = buf;
   *out_len = len;
