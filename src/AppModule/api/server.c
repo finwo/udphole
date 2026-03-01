@@ -26,6 +26,7 @@
 #include "common/socket_util.h"
 #include "config.h"
 #include "server.h"
+#include "RespModule/resp.h"
 
 struct pt_task;
 PT_THREAD(api_client_pt(struct pt *pt, int64_t timestamp, struct pt_task *task));
@@ -42,6 +43,8 @@ PT_THREAD(api_client_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
 struct api_client_state {
   int       fd;
   int      *fds;
+  int      *ready_fds;
+  int       ready_fd;
   char     *username;
   char      rbuf[READ_BUF_SIZE];
   size_t    rlen;
@@ -52,16 +55,6 @@ struct api_client_state {
 
 typedef struct api_client_state api_client_t;
 
-/* Server state (stored in pt udata) */
-
-struct api_server_state {
-  int *fds;
-  char *current_listen;
-  time_t next_listen_check;
-};
-
-typedef struct api_server_state api_server_t;
-
 /* Command entry */
 
 typedef struct {
@@ -71,7 +64,13 @@ typedef struct {
 
 /* Module state */
 
+static char     *current_listen = NULL;
 static struct hashmap  *cmd_map = NULL;
+
+typedef struct {
+  int      *server_fds;
+  int      *ready_fds;
+} api_server_udata_t;
 
 /* Write helpers */
 
@@ -266,7 +265,7 @@ static bool permit_matches(const char *pattern, const char *cmd) {
 static bool user_has_permit(api_client_t *c, const char *cmd) {
   char section[128];
   const char *uname = (c->username && c->username[0]) ? c->username : "*";
-  snprintf(section, sizeof(section), "api:%s", uname);
+  snprintf(section, sizeof(section), "user:%s", uname);
   resp_object *sec = resp_map_get(global_cfg, section);
   if (sec && sec->type == RESPT_ARRAY) {
     for (size_t i = 0; i < sec->u.arr.n; i += 2) {
@@ -280,23 +279,29 @@ static bool user_has_permit(api_client_t *c, const char *cmd) {
               if (p->type == RESPT_BULK && p->u.s && permit_matches(p->u.s, cmd))
                 return true;
             }
+          } else if (val->type == RESPT_BULK && val->u.s && permit_matches(val->u.s, cmd)) {
+            return true;
           }
         }
       }
     }
   }
   if (strcmp(uname, "*") != 0) {
-    resp_object *anon = resp_map_get(global_cfg, "api:*");
+    resp_object *anon = resp_map_get(global_cfg, "user:*");
     if (anon && anon->type == RESPT_ARRAY) {
       for (size_t i = 0; i < anon->u.arr.n; i += 2) {
-        resp_object *key = &anon->u.arr.elem[i];
-        resp_object *val = &anon->u.arr.elem[i + 1];
-        if (key->type == RESPT_BULK && key->u.s && strcmp(key->u.s, "permit") == 0) {
-          if (val->type == RESPT_ARRAY) {
-            for (size_t j = 0; j < val->u.arr.n; j++) {
-              resp_object *p = &val->u.arr.elem[j];
-              if (p->type == RESPT_BULK && p->u.s && permit_matches(p->u.s, cmd))
-                return true;
+        if (i + 1 < anon->u.arr.n) {
+          resp_object *key = &anon->u.arr.elem[i];
+          resp_object *val = &anon->u.arr.elem[i + 1];
+          if (key->type == RESPT_BULK && key->u.s && strcmp(key->u.s, "permit") == 0) {
+            if (val->type == RESPT_ARRAY) {
+              for (size_t j = 0; j < val->u.arr.n; j++) {
+                resp_object *p = &val->u.arr.elem[j];
+                if (p->type == RESPT_BULK && p->u.s && permit_matches(p->u.s, cmd))
+                  return true;
+              }
+            } else if (val->type == RESPT_BULK && val->u.s && permit_matches(val->u.s, cmd)) {
+              return true;
             }
           }
         }
@@ -337,7 +342,7 @@ static char cmdAUTH(api_client_t *c, char **args, int nargs) {
   const char *uname = args[1];
   const char *pass  = args[2];
   char section[128];
-  snprintf(section, sizeof(section), "api:%s", uname);
+  snprintf(section, sizeof(section), "user:%s", uname);
   resp_object *sec = resp_map_get(global_cfg, section);
   const char *secret = sec ? resp_map_get_string(sec, "secret") : NULL;
   if (secret && pass && strcmp(secret, pass) == 0) {
@@ -366,29 +371,41 @@ static char cmdQUIT(api_client_t *c, char **args, int nargs) {
   return 0;
 }
 
+static bool is_builtin(const char *name);
+
 static char cmdCOMMAND(api_client_t *c, char **args, int nargs) {
-  (void)args; (void)nargs;
+  (void)args;
   if (!cmd_map)
     return api_write_array(c, 0) ? 1 : 0;
 
-  size_t count = 0;
+  resp_object *result = resp_array_init();
+  if (!result) return 0;
+
   size_t iter = 0;
   void *item;
   while (hashmap_iter(cmd_map, &iter, &item)) {
     const api_cmd_entry *e = item;
-    if (user_has_permit(c, e->name))
-      count++;
+    if (!is_builtin(e->name) && !user_has_permit(c, e->name))
+      continue;
+
+    resp_array_append_bulk(result, e->name);
+    resp_object *meta = resp_array_init();
+    if (!meta) { resp_free(result); return 0; }
+    resp_array_append_bulk(meta, "summary");
+    resp_array_append_bulk(meta, "UDP hole proxy command");
+    resp_array_append_obj(result, meta);
   }
 
-  if (!api_write_array(c, count)) return 0;
-
-  iter = 0;
-  while (hashmap_iter(cmd_map, &iter, &item)) {
-    const api_cmd_entry *e = item;
-    if (user_has_permit(c, e->name)) {
-      if (!api_write_bulk_cstr(c, e->name)) return 0;
-    }
+  char *out_buf = NULL;
+  size_t out_len = 0;
+  if (resp_serialize(result, &out_buf, &out_len) != 0 || !out_buf) {
+    resp_free(result);
+    return 0;
   }
+  resp_free(result);
+
+  api_write_raw(c, out_buf, out_len);
+  free(out_buf);
   return 1;
 }
 
@@ -472,99 +489,64 @@ static void handle_accept(int ready_fd) {
 }
 
 PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
-  api_server_t *s = task->udata;
-  time_t loop_timestamp = 0;
+  api_server_udata_t *udata = task->udata;
   log_trace("api_server: protothread entry");
   PT_BEGIN(pt);
 
-  if (!s) {
-    s = calloc(1, sizeof(*s));
-    if (!s) {
+  if (!udata) {
+    udata = calloc(1, sizeof(api_server_udata_t));
+    if (!udata) {
       PT_EXIT(pt);
     }
-    task->udata = s;
+    task->udata = udata;
   }
 
-  if (!s->current_listen) {
-    resp_object *api_sec = resp_map_get(global_cfg, "udphole");
-    const char *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
-    if (!listen_str || !listen_str[0]) {
-      log_info("api: no listen address configured, API server disabled");
-      free(s);
+  resp_object *api_sec = resp_map_get(global_cfg, "udphole");
+  const char *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
+  if (!listen_str || !listen_str[0]) {
+    log_info("api: no listen address configured, API server disabled");
+    PT_EXIT(pt);
+  }
+
+  if (!current_listen) {
+    current_listen = strdup(listen_str);
+    if (!current_listen) {
       PT_EXIT(pt);
     }
-
-    s->current_listen = strdup(listen_str);
-    if (!s->current_listen) {
-      free(s);
-      PT_EXIT(pt);
-    }
-
     init_builtins();
-    s->fds = create_listen_socket(s->current_listen);
-    if (!s->fds) {
-      free(s->current_listen);
-      s->current_listen = NULL;
-      free(s);
+    udata->server_fds = create_listen_socket(current_listen);
+    if (!udata->server_fds) {
+      free(current_listen);
+      current_listen = NULL;
       PT_EXIT(pt);
     }
   }
 
   for (;;) {
-    loop_timestamp = (time_t)(timestamp / 1000);
-
-    if (loop_timestamp >= s->next_listen_check) {
-      s->next_listen_check = loop_timestamp + 60;
-      resp_object *api_sec = resp_map_get(global_cfg, "udphole");
-      const char *new_str = api_sec ? resp_map_get_string(api_sec, "listen") : "";
-      int rebind = (s->current_listen && (!new_str[0] || strcmp(s->current_listen, new_str) != 0)) ||
-                   (!s->current_listen && new_str[0]);
-      if (rebind) {
-        if (s->fds) {
-          for (int i = 1; i <= s->fds[0]; i++) {
-            close(s->fds[i]);
-          }
-        }
-        free(s->current_listen);
-        s->current_listen = (new_str[0]) ? strdup(new_str) : NULL;
-        if (s->current_listen) {
-          int *new_fds = create_listen_socket(s->current_listen);
-          if (new_fds) {
-            s->fds = realloc(s->fds, sizeof(int) * (new_fds[0] + 1));
-            s->fds[0] = new_fds[0];
-            for (int i = 1; i <= new_fds[0]; i++) {
-              s->fds[i] = new_fds[i];
-            }
-            free(new_fds);
-          } else {
-            free(s->current_listen);
-            s->current_listen = NULL;
-          }
+    (void)timestamp;
+    if (udata->server_fds && udata->server_fds[0] > 0) {
+      PT_WAIT_UNTIL(pt, schedmod_has_data(udata->server_fds, &udata->ready_fds) > 0);
+      if (udata->ready_fds && udata->ready_fds[0] > 0) {
+        for (int i = 1; i <= udata->ready_fds[0]; i++) {
+          handle_accept(udata->ready_fds[i]);
         }
       }
-    }
-
-    if (s->fds && s->fds[0] > 0) {
-      int *ready_fds = NULL;
-      PT_WAIT_UNTIL(pt, schedmod_has_data(s->fds, &ready_fds) > 0);
-      if (ready_fds && ready_fds[0] > 0) {
-        for (int i = 1; i <= ready_fds[0]; i++) {
-          handle_accept(ready_fds[i]);
-        }
-      }
-      free(ready_fds);
+  if (udata->ready_fds) free(udata->ready_fds);
+      udata->ready_fds = NULL;
     } else {
       PT_YIELD(pt);
     }
   }
-  if (s->fds) {
-    for (int i = 1; i <= s->fds[0]; i++) {
-      close(s->fds[i]);
+  if (udata->server_fds) {
+    for (int i = 1; i <= udata->server_fds[0]; i++) {
+      close(udata->server_fds[i]);
     }
-    free(s->fds);
+    free(udata->server_fds);
   }
-  free(s->current_listen);
-  free(s);
+  free(udata->ready_fds);
+  free(udata);
+  free(current_listen);
+  current_listen = NULL;
   if (cmd_map) {
     hashmap_free(cmd_map);
     cmd_map = NULL;
@@ -589,43 +571,63 @@ PT_THREAD(api_client_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
   state->fds[1] = state->fd;
 
   for (;;) {
-    int *ready_fds = NULL;
-    PT_WAIT_UNTIL(pt, schedmod_has_data(state->fds, &ready_fds) > 0);
+    state->ready_fds = NULL;
+    PT_WAIT_UNTIL(pt, schedmod_has_data(state->fds, &state->ready_fds) > 0);
 
-    int ready_fd = -1;
-    if (ready_fds && ready_fds[0] > 0) {
-      for (int i = 1; i <= ready_fds[0]; i++) {
-        if (ready_fds[i] == state->fd) {
-          ready_fd = state->fd;
+    state->ready_fd = -1;
+    if (state->ready_fds && state->ready_fds[0] > 0) {
+      for (int i = 1; i <= state->ready_fds[0]; i++) {
+        if (state->ready_fds[i] == state->fd) {
+          state->ready_fd = state->fd;
           break;
         }
       }
     }
-    free(ready_fds);
+    free(state->ready_fds);
+    state->ready_fds = NULL;
 
-    if (ready_fd != state->fd) continue;
-
-    size_t space = sizeof(state->rbuf) - state->rlen;
-    if (space == 0) {
+    char buf[1];
+    ssize_t n = recv(state->fd, buf, 1, MSG_PEEK);
+    if (n <= 0) {
       break;
     }
-    ssize_t n = recv(state->fd, state->rbuf + state->rlen, space, 0);
-    if (n <= 0) {
-      if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
-        break;
+
+    resp_object *cmd = resp_read(state->fd);
+    if (!cmd) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        PT_YIELD(pt);
+        continue;
+      }
+      break;
     }
-    state->rlen += (size_t)n;
+
+    if (cmd->type != RESPT_ARRAY || cmd->u.arr.n == 0) {
+      resp_free(cmd);
+      api_write_err(state, "Protocol error");
+      client_flush(state);
+      continue;
+    }
 
     char *args[MAX_ARGS];
-    int nargs;
-    int rc = 0;
-    while (state->fd >= 0 && (rc = parse_resp_command(state, args, MAX_ARGS, &nargs)) > 0) {
+    int nargs = 0;
+    for (size_t i = 0; i < cmd->u.arr.n && nargs < MAX_ARGS; i++) {
+      resp_object *elem = &cmd->u.arr.elem[i];
+      if (elem->type == RESPT_BULK && elem->u.s) {
+        args[nargs++] = elem->u.s;
+        elem->u.s = NULL;
+      } else if (elem->type == RESPT_SIMPLE) {
+        args[nargs++] = elem->u.s ? elem->u.s : "";
+      }
+    }
+
+    if (nargs > 0) {
       dispatch_command(state, args, nargs);
-      for (int j = 0; j < nargs; j++) free(args[j]);
     }
-    if (rc < 0) {
-      api_write_err(state, "Protocol error");
+
+    for (int j = 0; j < nargs; j++) {
+      free(args[j]);
     }
+    resp_free(cmd);
 
     client_flush(state);
 

@@ -12,13 +12,8 @@
 #include "CliModule/common.h"
 #include "SchedulerModule/scheduler.h"
 #include "AppModule/command/daemon.h"
-#include "AppModule/udphole.h"
-#include "ApiModule/server.h"
-
-static const char *const daemon_usages[] = {
-  "udphole daemon [options]",
-  NULL,
-};
+#include "AppModule/api/server.h"
+#include "AppModule/rtp/server.h"
 
 static int do_daemonize(void) {
   pid_t pid = fork();
@@ -39,8 +34,7 @@ static int do_daemonize(void) {
   }
   if (pid > 0)
     _exit(0);
-  if (chdir("/") != 0) {
-  }
+  if (chdir("/") != 0) {}
   int fd;
   for (fd = 0; fd < 3; fd++)
     (void)close(fd);
@@ -63,18 +57,22 @@ int appmodule_cmd_daemon(int argc, const char **argv) {
   struct argparse_option options[] = {
     OPT_HELP(),
     OPT_BOOLEAN('d', "daemonize", &daemonize_flag, "run in background", NULL, 0, 0),
-    OPT_BOOLEAN('D', "no-daemonize", &no_daemonize_flag, "force foreground (overrides config daemonize=1)", NULL, 0, 0),
+    OPT_BOOLEAN('D', "no-daemonize", &no_daemonize_flag, "force foreground", NULL, 0, 0),
     OPT_END(),
   };
-  argparse_init(&argparse, options, daemon_usages, ARGPARSE_STOP_AT_NON_OPTION);
-  argc = argparse_parse(&argparse, argc, argv);
+  argparse_init(&argparse, options, (const char *const[]){"udphole daemon", NULL}, ARGPARSE_STOP_AT_NON_OPTION);
+  argparse_parse(&argparse, argc, argv);
 
-  if ((!no_daemonize_flag) && (daemonize_flag || 0)) {
+  if (!no_daemonize_flag && (daemonize_flag || 0)) {
     do_daemonize();
   }
 
+  log_info("udphole: starting daemon");
+
   schedmod_pt_create(api_server_pt, NULL);
   schedmod_pt_create(udphole_manager_pt, NULL);
+
+  log_info("udphole: daemon started");
 
   return schedmod_main();
 }

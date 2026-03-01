@@ -23,6 +23,8 @@ int schedmod_pt_create(pt_task_fn fn, void *udata) {
   PT_INIT(&node->pt);
   node->is_active  = 1;
   pt_first = node;
+  
+  log_trace("scheduler: created task %p (func=%p, udata=%p), pt_first=%p", (void*)node, (void*)fn, udata, (void*)pt_first);
 
   return 0;
 }
@@ -52,6 +54,7 @@ int schedmod_pt_remove(pt_task_t *task) {
 
 int schedmod_has_data(int *in_fds, int **out_fds) {
   if (!in_fds || in_fds[0] == 0) return 0;
+  log_trace("schedmod_has_data: in_fds[0]=%d", in_fds[0]);
 
   for (int i = 1; i <= in_fds[0]; i++) {
     int fd = in_fds[i];
@@ -80,6 +83,7 @@ int schedmod_has_data(int *in_fds, int **out_fds) {
   for (int i = 1; i <= in_fds[0]; i++) {
     if (in_fds[i] >= 0 && FD_ISSET(in_fds[i], &g_select_result)) {
       (*out_fds)[idx++] = in_fds[i];
+      FD_CLR(in_fds[i], &g_select_result);
     }
   }
 
@@ -100,9 +104,11 @@ int schedmod_main() {
       }
     }
 
+
     tv.tv_sec = 0;
     tv.tv_usec = 100000;
     select(maxfd + 1, &g_want_fds, NULL, NULL, &tv);
+    log_trace("scheduler: select returned");
 
     struct timeval now;
     gettimeofday(&now, NULL);
@@ -111,17 +117,19 @@ int schedmod_main() {
 
     FD_ZERO(&g_want_fds);
 
-    pt_task_t *task = pt_first;
-    while (task) {
-      pt_task_t *next = task->next;
-      log_trace("scheduler: running task %p", (void*)task->func);
-      task->is_active = PT_SCHEDULE(task->func(&task->pt, timestamp, task));
-      log_trace("scheduler: task %p returned, is_active=%d", (void*)task->func, task->is_active);
-      if (!task->is_active) {
-        schedmod_pt_remove(task);
-      }
-      task = next;
+  pt_task_t *task = pt_first;
+  while (task) {
+    pt_task_t *next = task->next;
+    log_trace("scheduler: about to run task %p (func=%p, is_active=%d)", (void*)task, (void*)task->func, task->is_active);
+    task->is_active = PT_SCHEDULE(task->func(&task->pt, timestamp, task));
+    log_trace("scheduler: task %p (func=%p) returned, is_active=%d, next=%p", (void*)task, (void*)task->func, task->is_active, (void*)next);
+    if (!task->is_active) {
+      log_trace("scheduler: removing inactive task %p", (void*)task);
+      schedmod_pt_remove(task);
     }
+    task = next;
+  }
+  log_trace("scheduler: loop done, pt_first=%p", (void*)pt_first);
 
     if (!pt_first) break;
   }

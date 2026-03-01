@@ -1,4 +1,5 @@
 /lib/
 *.o
+*.log
 /udphole
 /config.ini

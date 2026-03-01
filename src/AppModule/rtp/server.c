@@ -18,16 +18,16 @@
 #include "common/socket_util.h"
 #include "config.h"
 #include "tidwall/hashmap.h"
-#include "AppModule/udphole.h"
-#include "ApiModule/server.h"
+#include "server.h"
+#include "AppModule/api/server.h"
 
-#define UDPHOLE_SESSION_HASH_SIZE 256
-#define UDPHOLE_BUFFER_SIZE 4096
+#define RTP_SESSION_HASH_SIZE 256
+#define RTP_BUFFER_SIZE 4096
 #define DEFAULT_IDLE_EXPIRY 60
 
-typedef struct udphole_socket {
+typedef struct rtp_socket {
   char *socket_id;
-  int fd;
+  int *fds;
   int local_port;
   int mode;
   struct sockaddr_storage remote_addr;
@@ -35,70 +35,66 @@ typedef struct udphole_socket {
   int learned_valid;
   struct sockaddr_storage learned_addr;
   socklen_t learned_addrlen;
-} udphole_socket_t;
+} rtp_socket_t;
 
-typedef struct udphole_forward {
+typedef struct rtp_forward {
   char *src_socket_id;
   char *dst_socket_id;
-} udphole_forward_t;
+} rtp_forward_t;
 
-typedef struct udphole_session {
+typedef struct rtp_session {
   char *session_id;
   time_t idle_expiry;
   time_t created;
   time_t last_activity;
-  struct hashmap *sockets;
-  udphole_forward_t *forwards;
+  rtp_socket_t **sockets;
+  size_t sockets_count;
+  rtp_forward_t *forwards;
   size_t forwards_count;
-  int *fds;
-  int fd_count;
   int marked_for_deletion;
   int *ready_fds;
+  int *all_fds;
   struct pt pt;
   struct pt_task *task;
-} udphole_session_t;
+} rtp_session_t;
 
-static struct hashmap *sessions = NULL;
+static rtp_session_t **sessions = NULL;
+static size_t sessions_count = 0;
 static char *advertise_addr = NULL;
 static int port_low = 7000;
 static int port_high = 7999;
 static int port_cur = 7000;
 static int running = 0;
 
-static uint64_t session_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-  const udphole_session_t *s = item;
-  return hashmap_sip(s->session_id, strlen(s->session_id), seed0, seed1);
-}
-
-static int session_compare(const void *a, const void *b, void *udata) {
-  (void)udata;
-  const udphole_session_t *sa = a;
-  const udphole_session_t *sb = b;
-  return strcmp(sa->session_id, sb->session_id);
+static rtp_session_t *find_session(const char *session_id) {
+  for (size_t i = 0; i < sessions_count; i++) {
+    if (strcmp(sessions[i]->session_id, session_id) == 0) {
+      return sessions[i];
+    }
+  }
+  return NULL;
 }
 
 static uint64_t socket_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-  const udphole_socket_t *s = item;
+  const rtp_socket_t *s = item;
   return hashmap_sip(s->socket_id, strlen(s->socket_id), seed0, seed1);
 }
 
 static int socket_compare(const void *a, const void *b, void *udata) {
   (void)udata;
-  const udphole_socket_t *sa = a;
-  const udphole_socket_t *sb = b;
+  const rtp_socket_t *sa = a;
+  const rtp_socket_t *sb = b;
   return strcmp(sa->socket_id, sb->socket_id);
 }
 
-static udphole_session_t *find_session(const char *session_id) {
-  if (!sessions || !session_id) return NULL;
-  udphole_session_t key = { .session_id = (char *)session_id };
-  return (udphole_session_t *)hashmap_get(sessions, &key);
-}
-
-static udphole_socket_t *find_socket(udphole_session_t *s, const char *socket_id) {
+static rtp_socket_t *find_socket(rtp_session_t *s, const char *socket_id) {
   if (!s || !s->sockets || !socket_id) return NULL;
-  udphole_socket_t key = { .socket_id = (char *)socket_id };
-  return (udphole_socket_t *)hashmap_get(s->sockets, &key);
+  for (size_t i = 0; i < s->sockets_count; i++) {
+    if (s->sockets[i] && strcmp(s->sockets[i]->socket_id, socket_id) == 0) {
+      return s->sockets[i];
+    }
+  }
+  return NULL;
 }
 
 static int alloc_port(void) {
@@ -147,66 +143,40 @@ static int parse_ip_addr(const char *ip_str, int port, struct sockaddr_storage *
   return -1;
 }
 
-static void close_socket(udphole_socket_t *sock) {
-  if (!sock) return;
-  if (sock->fd >= 0) {
-    close(sock->fd);
-    sock->fd = -1;
+static void close_socket(rtp_socket_t *sock) {
+  if (!sock || !sock->fds) return;
+  for (int i = 1; i <= sock->fds[0]; i++) {
+    if (sock->fds[i] >= 0) {
+      close(sock->fds[i]);
+    }
   }
+  free(sock->fds);
+  sock->fds = NULL;
 }
 
-static void free_socket(udphole_socket_t *sock) {
+static void free_socket(rtp_socket_t *sock) {
   if (!sock) return;
   close_socket(sock);
   free(sock->socket_id);
   free(sock);
 }
 
-static void destroy_session(udphole_session_t *s);
-
-static void session_remove_fds(udphole_session_t *s) {
+static void destroy_session(rtp_session_t *s) {
   if (!s) return;
-  if (s->fds) {
-    free(s->fds);
-    s->fds = NULL;
-  }
-  s->fd_count = 0;
-}
-
-static void session_update_fds(udphole_session_t *s) {
-  session_remove_fds(s);
-  if (!s || !s->sockets) return;
-
-  int count = (int)hashmap_count(s->sockets);
-  if (count == 0) return;
-
-  s->fds = malloc(sizeof(int) * (count + 1));
-  if (!s->fds) return;
-  s->fds[0] = 0;
-
-  size_t iter = 0;
-  void *item;
-  while (hashmap_iter(s->sockets, &iter, &item)) {
-    udphole_socket_t *sock = item;
-    if (sock->fd >= 0) {
-      s->fds[++s->fds[0]] = sock->fd;
+  s->marked_for_deletion = 1;
+  for (size_t i = 0; i < sessions_count; i++) {
+    if (sessions[i] == s) {
+      sessions[i] = NULL;
+      break;
     }
   }
 }
 
-static void destroy_session(udphole_session_t *s) {
-  if (!s) return;
-  s->marked_for_deletion = 1;
-  if (sessions) {
-    hashmap_delete(sessions, s);
-  }
-}
+static rtp_session_t *create_session(const char *session_id, int idle_expiry) {
+  const rtp_session_t *cs = find_session(session_id);
+  if (cs) return (rtp_session_t *)cs;
 
-static udphole_session_t *create_session(const char *session_id, int idle_expiry) {
-  const udphole_session_t *cs = find_session(session_id);
-  if (cs) return (udphole_session_t *)cs;
-
-  udphole_session_t *s = calloc(1, sizeof(*s));
+  rtp_session_t *s = calloc(1, sizeof(*s));
   if (!s) return NULL;
 
   s->session_id = strdup(session_id);
@@ -214,14 +184,9 @@ static udphole_session_t *create_session(const char *session_id, int idle_expiry
   s->last_activity = s->created;
   s->idle_expiry = idle_expiry > 0 ? idle_expiry : DEFAULT_IDLE_EXPIRY;
 
-  s->sockets = hashmap_new(sizeof(udphole_socket_t), 0, 0, 0, socket_hash, socket_compare, NULL, NULL);
+  sessions = realloc(sessions, sizeof(rtp_session_t *) * (sessions_count + 1));
+  sessions[sessions_count++] = s;
 
-  if (!sessions) {
-    sessions = hashmap_new(sizeof(udphole_session_t), 0, 0, 0, session_hash, session_compare, NULL, NULL);
-  }
-  hashmap_set(sessions, s);
-
-  log_debug("udphole: created session %s with idle_expiry %ld", session_id, (long)s->idle_expiry);
   return s;
 }
 
@@ -229,10 +194,9 @@ static void cleanup_expired_sessions(void) {
   if (!sessions) return;
   time_t now = time(NULL);
 
-  size_t iter = 0;
-  void *item;
-  while (hashmap_iter(sessions, &iter, &item)) {
-    udphole_session_t *s = item;
+  for (size_t i = 0; i < sessions_count; i++) {
+    rtp_session_t *s = sessions[i];
+    if (!s) continue;
     if (now - s->last_activity > s->idle_expiry) {
       log_debug("udphole: session %s expired (idle %ld > expiry %ld)",
                 s->session_id, (long)(now - s->last_activity), (long)s->idle_expiry);
@@ -241,7 +205,7 @@ static void cleanup_expired_sessions(void) {
   }
 }
 
-static int add_forward(udphole_session_t *s, const char *src_id, const char *dst_id) {
+static int add_forward(rtp_session_t *s, const char *src_id, const char *dst_id) {
   for (size_t i = 0; i < s->forwards_count; i++) {
     if (strcmp(s->forwards[i].src_socket_id, src_id) == 0 &&
         strcmp(s->forwards[i].dst_socket_id, dst_id) == 0) {
@@ -249,7 +213,7 @@ static int add_forward(udphole_session_t *s, const char *src_id, const char *dst
     }
   }
 
-  udphole_forward_t *new_forwards = realloc(s->forwards, sizeof(udphole_forward_t) * (s->forwards_count + 1));
+  rtp_forward_t *new_forwards = realloc(s->forwards, sizeof(rtp_forward_t) * (s->forwards_count + 1));
   if (!new_forwards) return -1;
   s->forwards = new_forwards;
 
@@ -260,7 +224,7 @@ static int add_forward(udphole_session_t *s, const char *src_id, const char *dst
   return 0;
 }
 
-static int remove_forward(udphole_session_t *s, const char *src_id, const char *dst_id) {
+static int remove_forward(rtp_session_t *s, const char *src_id, const char *dst_id) {
   for (size_t i = 0; i < s->forwards_count; i++) {
     if (strcmp(s->forwards[i].src_socket_id, src_id) == 0 &&
         strcmp(s->forwards[i].dst_socket_id, dst_id) == 0) {
@@ -276,8 +240,8 @@ static int remove_forward(udphole_session_t *s, const char *src_id, const char *
   return -1;
 }
 
-static udphole_socket_t *create_listen_socket(udphole_session_t *sess, const char *socket_id) {
-  udphole_socket_t *existing = find_socket(sess, socket_id);
+static rtp_socket_t *create_listen_socket(rtp_session_t *sess, const char *socket_id) {
+  rtp_socket_t *existing = find_socket(sess, socket_id);
   if (existing) return existing;
 
   int port = alloc_port();
@@ -295,30 +259,29 @@ static udphole_socket_t *create_listen_socket(udphole_session_t *sess, const cha
     return NULL;
   }
 
-  udphole_socket_t *sock = calloc(1, sizeof(*sock));
+  rtp_socket_t *sock = calloc(1, sizeof(*sock));
   if (!sock) {
     free(fds);
     return NULL;
   }
 
   sock->socket_id = strdup(socket_id);
-  sock->fd = fds[1];
+  sock->fds = fds;
   sock->local_port = port;
   sock->mode = 0;
   sock->learned_valid = 0;
-  free(fds);
 
-  hashmap_set(sess->sockets, sock);
-  session_update_fds(sess);
+  sess->sockets = realloc(sess->sockets, sizeof(rtp_socket_t *) * (sess->sockets_count + 1));
+  sess->sockets[sess->sockets_count++] = sock;
 
   log_debug("udphole: created listen socket %s in session %s on port %d",
             socket_id, sess->session_id, port);
   return sock;
 }
 
-static udphole_socket_t *create_connect_socket(udphole_session_t *sess, const char *socket_id,
+static rtp_socket_t *create_connect_socket(rtp_session_t *sess, const char *socket_id,
                                            const char *ip, int port) {
-  udphole_socket_t *existing = find_socket(sess, socket_id);
+  rtp_socket_t *existing = find_socket(sess, socket_id);
   if (existing) return existing;
 
   int local_port = alloc_port();
@@ -344,36 +307,39 @@ static udphole_socket_t *create_connect_socket(udphole_session_t *sess, const ch
     return NULL;
   }
 
-  udphole_socket_t *sock = calloc(1, sizeof(*sock));
+  rtp_socket_t *sock = calloc(1, sizeof(*sock));
   if (!sock) {
     free(fds);
     return NULL;
   }
 
   sock->socket_id = strdup(socket_id);
-  sock->fd = fds[1];
+  sock->fds = fds;
   sock->local_port = local_port;
   sock->mode = 1;
   sock->remote_addr = remote_addr;
   sock->remote_addrlen = remote_addrlen;
   sock->learned_valid = 0;
-  free(fds);
 
-  hashmap_set(sess->sockets, sock);
-  session_update_fds(sess);
+  sess->sockets = realloc(sess->sockets, sizeof(rtp_socket_t *) * (sess->sockets_count + 1));
+  sess->sockets[sess->sockets_count++] = sock;
 
   log_debug("udphole: created connect socket %s in session %s on port %d -> %s:%d",
             socket_id, sess->session_id, local_port, ip, port);
   return sock;
 }
 
-static int destroy_socket(udphole_session_t *sess, const char *socket_id) {
-  udphole_socket_t *sock = find_socket(sess, socket_id);
+static int destroy_socket(rtp_session_t *sess, const char *socket_id) {
+  rtp_socket_t *sock = find_socket(sess, socket_id);
   if (!sock) return -1;
 
-  hashmap_delete(sess->sockets, sock);
+  for (size_t i = 0; i < sess->sockets_count; i++) {
+    if (sess->sockets[i] == sock) {
+      sess->sockets[i] = NULL;
+      break;
+    }
+  }
   free_socket(sock);
-  session_update_fds(sess);
 
   for (size_t i = 0; i < sess->forwards_count; ) {
     if (strcmp(sess->forwards[i].src_socket_id, socket_id) == 0 ||
@@ -392,26 +358,59 @@ static int destroy_socket(udphole_session_t *sess, const char *socket_id) {
   return 0;
 }
 
-PT_THREAD(udphole_session_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
-  udphole_session_t *s = task->udata;
+static rtp_socket_t *find_socket_by_fd(rtp_session_t *s, int fd) {
+  if (!s || !s->sockets) return NULL;
+  for (size_t j = 0; j < s->sockets_count; j++) {
+    rtp_socket_t *sock = s->sockets[j];
+    if (!sock || !sock->fds) continue;
+    for (int i = 1; i <= sock->fds[0]; i++) {
+      if (sock->fds[i] == fd) {
+        return sock;
+      }
+    }
+  }
+  return NULL;
+}
+
+PT_THREAD(rtp_session_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
+  rtp_session_t *s = task->udata;
 
   (void)timestamp;
-  log_trace("udphole_session: protothread entry session=%s", s->session_id);
   PT_BEGIN(pt);
 
-  char buffer[UDPHOLE_BUFFER_SIZE];
+  char buffer[RTP_BUFFER_SIZE];
 
   for (;;) {
     if (s->marked_for_deletion) {
       break;
     }
 
-    if (!s->fds || s->fd_count == 0) {
+    if (!s->sockets || s->sockets_count == 0) {
       PT_YIELD(pt);
       continue;
     }
 
-    PT_WAIT_UNTIL(pt, schedmod_has_data(s->fds, &s->ready_fds) > 0);
+    s->all_fds = realloc(s->all_fds, sizeof(int) * (s->sockets_count * 2 + 1));
+    if (!s->all_fds) {
+      PT_YIELD(pt);
+      continue;
+    }
+    s->all_fds[0] = 0;
+
+    for (size_t j = 0; j < s->sockets_count; j++) {
+      rtp_socket_t *sock = s->sockets[j];
+      if (!sock || !sock->fds) continue;
+      for (int i = 1; i <= sock->fds[0]; i++) {
+        s->all_fds[++s->all_fds[0]] = sock->fds[i];
+      }
+    }
+
+    if (s->all_fds[0] == 0) {
+      PT_YIELD(pt);
+      continue;
+    }
+
+    PT_WAIT_UNTIL(pt, schedmod_has_data(s->all_fds, &s->ready_fds) > 0);
 
     if (!s->ready_fds || s->ready_fds[0] == 0) {
       PT_YIELD(pt);
@@ -421,17 +420,7 @@ PT_THREAD(udphole_session_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
     for (int r = 1; r <= s->ready_fds[0]; r++) {
       int ready_fd = s->ready_fds[r];
 
-      udphole_socket_t *src_sock = NULL;
-      size_t iter = 0;
-      void *item;
-      while (hashmap_iter(s->sockets, &iter, &item)) {
-        udphole_socket_t *sock = item;
-        if (sock->fd == ready_fd) {
-          src_sock = sock;
-          break;
-        }
-      }
-
+      rtp_socket_t *src_sock = find_socket_by_fd(s, ready_fd);
       if (!src_sock) continue;
 
       struct sockaddr_storage from_addr;
@@ -461,8 +450,8 @@ PT_THREAD(udphole_session_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
           continue;
         }
 
-        udphole_socket_t *dst_sock = find_socket(s, s->forwards[i].dst_socket_id);
-        if (!dst_sock || dst_sock->fd < 0) continue;
+        rtp_socket_t *dst_sock = find_socket(s, s->forwards[i].dst_socket_id);
+        if (!dst_sock || !dst_sock->fds || dst_sock->fds[0] == 0) continue;
 
         struct sockaddr *dest_addr = NULL;
         socklen_t dest_addrlen = 0;
@@ -476,7 +465,8 @@ PT_THREAD(udphole_session_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
         }
 
         if (dest_addr && dest_addrlen > 0) {
-          ssize_t sent = sendto(dst_sock->fd, buffer, n, 0, dest_addr, dest_addrlen);
+          int dst_fd = dst_sock->fds[1];
+          ssize_t sent = sendto(dst_fd, buffer, n, 0, dest_addr, dest_addrlen);
           if (sent < 0) {
             log_warn("udphole: forward failed %s -> %s: %s",
                      src_sock->socket_id, dst_sock->socket_id, strerror(errno));
@@ -484,63 +474,39 @@ PT_THREAD(udphole_session_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
         }
       }
     }
+
   }
 
   log_debug("udphole: session %s protothread exiting", s->session_id);
 
+  if (s->all_fds) {
+    free(s->all_fds);
+    s->all_fds = NULL;
+  }
   if (s->ready_fds) {
     free(s->ready_fds);
     s->ready_fds = NULL;
   }
 
-  if (s->fds) {
-    free(s->fds);
-    s->fds = NULL;
-  }
-
-  if (s->sockets) {
-    size_t iter = 0;
-    void *item;
-    while (hashmap_iter(s->sockets, &iter, &item)) {
-      udphole_socket_t *sock = item;
-      free_socket(sock);
-    }
-    hashmap_free(s->sockets);
-    s->sockets = NULL;
-  }
-
-  if (s->forwards) {
-    for (size_t i = 0; i < s->forwards_count; i++) {
-      free(s->forwards[i].src_socket_id);
-      free(s->forwards[i].dst_socket_id);
-    }
-    free(s->forwards);
-    s->forwards = NULL;
-    s->forwards_count = 0;
-  }
-
-  free(s->session_id);
-  free(s);
-
   PT_END(pt);
 }
 
-static void spawn_session_pt(udphole_session_t *s) {
-  s->task = (struct pt_task *)(intptr_t)schedmod_pt_create(udphole_session_pt, s);
+static void spawn_session_pt(rtp_session_t *s) {
+  s->task = (struct pt_task *)(intptr_t)schedmod_pt_create(rtp_session_pt, s);
 }
 
 static char cmd_session_create(api_client_t *c, char **args, int nargs) {
-  if (nargs != 3) {
+  if (nargs < 2) {
     return api_write_err(c, "wrong number of arguments for 'session.create'") ? 1 : 0;
   }
 
   const char *session_id = args[1];
   int idle_expiry = 0;
-  if (nargs >= 4 && args[2] && args[2][0] != '\0') {
+  if (nargs >= 3 && args[2] && args[2][0] != '\0') {
     idle_expiry = atoi(args[2]);
   }
 
-  udphole_session_t *s = create_session(session_id, idle_expiry);
+  rtp_session_t *s = create_session(session_id, idle_expiry);
   if (!s) {
     return api_write_err(c, "failed to create session") ? 1 : 0;
   }
@@ -559,13 +525,11 @@ static char cmd_session_list(api_client_t *c, char **args, int nargs) {
     return api_write_array(c, 0) ? 1 : 0;
   }
 
-  size_t count = hashmap_count(sessions);
-  if (!api_write_array(c, count)) return 0;
+  if (!api_write_array(c, sessions_count)) return 0;
 
-  size_t iter = 0;
-  void *item;
-  while (hashmap_iter(sessions, &iter, &item)) {
-    udphole_session_t *s = item;
+  for (size_t i = 0; i < sessions_count; i++) {
+    rtp_session_t *s = sessions[i];
+    if (!s) continue;
     if (!api_write_bulk_cstr(c, s->session_id)) return 0;
   }
 
@@ -578,7 +542,7 @@ static char cmd_session_info(api_client_t *c, char **args, int nargs) {
   }
 
   const char *session_id = args[1];
-  udphole_session_t *s = find_session(session_id);
+  rtp_session_t *s = find_session(session_id);
   if (!s) {
     return api_write_err(c, "session not found") ? 1 : 0;
   }
@@ -599,15 +563,11 @@ static char cmd_session_info(api_client_t *c, char **args, int nargs) {
   if (!api_write_bulk_int(c, (int)s->idle_expiry)) return 0;
 
   if (!api_write_bulk_cstr(c, "sockets")) return 0;
-  size_t socket_count = s->sockets ? hashmap_count(s->sockets) : 0;
-  if (!api_write_array(c, socket_count)) return 0;
-  if (s->sockets) {
-    size_t iter = 0;
-    void *item;
-    while (hashmap_iter(s->sockets, &iter, &item)) {
-      udphole_socket_t *sock = item;
-      if (!api_write_bulk_cstr(c, sock->socket_id)) return 0;
-    }
+  if (!api_write_array(c, s->sockets_count)) return 0;
+  for (size_t i = 0; i < s->sockets_count; i++) {
+    rtp_socket_t *sock = s->sockets[i];
+    if (!sock) continue;
+    if (!api_write_bulk_cstr(c, sock->socket_id)) return 0;
   }
 
   if (!api_write_bulk_cstr(c, "forwards")) return 0;
@@ -616,9 +576,6 @@ static char cmd_session_info(api_client_t *c, char **args, int nargs) {
     if (!api_write_bulk_cstr(c, s->forwards[i].src_socket_id)) return 0;
     if (!api_write_bulk_cstr(c, s->forwards[i].dst_socket_id)) return 0;
   }
-
-  if (!api_write_bulk_cstr(c, "fd_count")) return 0;
-  if (!api_write_int(c, s->fd_count)) return 0;
 
   if (!api_write_bulk_cstr(c, "marked_for_deletion")) return 0;
   if (!api_write_int(c, s->marked_for_deletion)) return 0;
@@ -632,7 +589,7 @@ static char cmd_session_destroy(api_client_t *c, char **args, int nargs) {
   }
 
   const char *session_id = args[1];
-  udphole_session_t *s = find_session(session_id);
+  rtp_session_t *s = find_session(session_id);
   if (!s) {
     return api_write_err(c, "session not found") ? 1 : 0;
   }
@@ -649,12 +606,12 @@ static char cmd_socket_create_listen(api_client_t *c, char **args, int nargs) {
   const char *session_id = args[1];
   const char *socket_id = args[2];
 
-  udphole_session_t *s = find_session(session_id);
+  rtp_session_t *s = find_session(session_id);
   if (!s) {
     return api_write_err(c, "session not found") ? 1 : 0;
   }
 
-  udphole_socket_t *sock = create_listen_socket(s, socket_id);
+  rtp_socket_t *sock = create_listen_socket(s, socket_id);
   if (!sock) {
     return api_write_err(c, "failed to create socket") ? 1 : 0;
   }
@@ -676,12 +633,12 @@ static char cmd_socket_create_connect(api_client_t *c, char **args, int nargs) {
   const char *ip = args[3];
   int port = atoi(args[4]);
 
-  udphole_session_t *s = find_session(session_id);
+  rtp_session_t *s = find_session(session_id);
   if (!s) {
     return api_write_err(c, "session not found") ? 1 : 0;
   }
 
-  udphole_socket_t *sock = create_connect_socket(s, socket_id, ip, port);
+  rtp_socket_t *sock = create_connect_socket(s, socket_id, ip, port);
   if (!sock) {
     return api_write_err(c, "failed to create socket") ? 1 : 0;
   }
@@ -701,7 +658,7 @@ static char cmd_socket_destroy(api_client_t *c, char **args, int nargs) {
   const char *session_id = args[1];
   const char *socket_id = args[2];
 
-  udphole_session_t *s = find_session(session_id);
+  rtp_session_t *s = find_session(session_id);
   if (!s) {
     return api_write_err(c, "session not found") ? 1 : 0;
   }
@@ -719,7 +676,7 @@ static char cmd_forward_list(api_client_t *c, char **args, int nargs) {
   }
 
   const char *session_id = args[1];
-  udphole_session_t *s = find_session(session_id);
+  rtp_session_t *s = find_session(session_id);
   if (!s) {
     return api_write_err(c, "session not found") ? 1 : 0;
   }
@@ -742,17 +699,17 @@ static char cmd_forward_create(api_client_t *c, char **args, int nargs) {
   const char *src_socket_id = args[2];
   const char *dst_socket_id = args[3];
 
-  udphole_session_t *s = find_session(session_id);
+  rtp_session_t *s = find_session(session_id);
   if (!s) {
     return api_write_err(c, "session not found") ? 1 : 0;
   }
 
-  udphole_socket_t *src = find_socket(s, src_socket_id);
+  rtp_socket_t *src = find_socket(s, src_socket_id);
   if (!src) {
     return api_write_err(c, "source socket not found") ? 1 : 0;
   }
 
-  udphole_socket_t *dst = find_socket(s, dst_socket_id);
+  rtp_socket_t *dst = find_socket(s, dst_socket_id);
   if (!dst) {
     return api_write_err(c, "destination socket not found") ? 1 : 0;
   }
@@ -761,6 +718,7 @@ static char cmd_forward_create(api_client_t *c, char **args, int nargs) {
     return api_write_err(c, "failed to add forward") ? 1 : 0;
   }
 
+  log_debug("udphole: created forward %s -> %s in session %s", src_socket_id, dst_socket_id, session_id);
   return api_write_ok(c) ? 1 : 0;
 }
 
@@ -773,7 +731,7 @@ static char cmd_forward_destroy(api_client_t *c, char **args, int nargs) {
   const char *src_socket_id = args[2];
   const char *dst_socket_id = args[3];
 
-  udphole_session_t *s = find_session(session_id);
+  rtp_session_t *s = find_session(session_id);
   if (!s) {
     return api_write_err(c, "session not found") ? 1 : 0;
   }
@@ -785,7 +743,7 @@ static char cmd_forward_destroy(api_client_t *c, char **args, int nargs) {
   return api_write_ok(c) ? 1 : 0;
 }
 
-static void register_udphole_commands(void) {
+static void register_rtp_commands(void) {
   api_register_cmd("session.create", cmd_session_create);
   api_register_cmd("session.list", cmd_session_list);
   api_register_cmd("session.info", cmd_session_info);
@@ -806,19 +764,19 @@ PT_THREAD(udphole_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
 
   PT_WAIT_UNTIL(pt, global_cfg);
 
-  resp_object *udphole_sec = resp_map_get(global_cfg, "udphole");
-  if (!udphole_sec) {
+  resp_object *rtp_sec = resp_map_get(global_cfg, "udphole");
+  if (!rtp_sec) {
     log_info("udphole: no [udphole] section in config, not starting");
     PT_EXIT(pt);
   }
 
-  const char *mode = resp_map_get_string(udphole_sec, "mode");
+  const char *mode = resp_map_get_string(rtp_sec, "mode");
   if (!mode || strcmp(mode, "builtin") != 0) {
     log_info("udphole: mode is '%s', not starting builtin server", mode ? mode : "(null)");
     PT_EXIT(pt);
   }
 
-  const char *ports_str = resp_map_get_string(udphole_sec, "ports");
+  const char *ports_str = resp_map_get_string(rtp_sec, "ports");
   if (ports_str) {
     sscanf(ports_str, "%d-%d", &port_low, &port_high);
     if (port_low <= 0) port_low = 7000;
@@ -826,12 +784,12 @@ PT_THREAD(udphole_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
   }
   port_cur = port_low;
 
-  const char *advertise_cfg = resp_map_get_string(udphole_sec, "advertise");
+  const char *advertise_cfg = resp_map_get_string(rtp_sec, "advertise");
   if (advertise_cfg) {
     advertise_addr = strdup(advertise_cfg);
   }
 
-  register_udphole_commands();
+  register_rtp_commands();
   running = 1;
   log_info("udphole: manager started with port range %d-%d", port_low, port_high);
 
@@ -839,9 +797,9 @@ PT_THREAD(udphole_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
 
   for (;;) {
     if (global_cfg) {
-      resp_object *new_udphole_sec = resp_map_get(global_cfg, "udphole");
-      if (new_udphole_sec) {
-        const char *new_mode = resp_map_get_string(new_udphole_sec, "mode");
+      resp_object *new_rtp_sec = resp_map_get(global_cfg, "udphole");
+      if (new_rtp_sec) {
+        const char *new_mode = resp_map_get_string(new_rtp_sec, "mode");
         if (new_mode && strcmp(new_mode, "builtin") != 0) {
           log_info("udphole: mode changed to '%s', shutting down", new_mode);
           break;
@@ -860,12 +818,9 @@ PT_THREAD(udphole_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *t
 
   running = 0;
 
-  if (sessions) {
-    size_t iter = 0;
-    void *item;
-    while (hashmap_iter(sessions, &iter, &item)) {
-      udphole_session_t *s = item;
-      s->marked_for_deletion = 1;
+  for (size_t i = 0; i < sessions_count; i++) {
+    if (sessions[i]) {
+      sessions[i]->marked_for_deletion = 1;
     }
   }
 

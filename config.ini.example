@@ -1,4 +1,11 @@
 [udphole]
 mode = builtin
 ports = 7000-7999
-listen = :12344
+listen = :12345
+
+[user:admin]
+secret = adminpass
+permit = *
+
+[user:*]
+permit = ping
