@@ -26,35 +26,35 @@ jobs:
         include:
           - name: linux-amd64
             runs-on: ubuntu-latest
-            bin: udphole-core-linux-amd64
+            bin: udphole-linux-amd64
             cross: false
 
           - name: linux-arm64
             runs-on: ubuntu-latest
-            bin: udphole-core-linux-arm64
+            bin: udphole-linux-arm64
             cross: true
             arch: aarch64
 
           - name: linux-armv7
             runs-on: ubuntu-latest
-            bin: udphole-core-linux-armv7
+            bin: udphole-linux-armv7
             cross: true
             arch: armv7
 
           - name: linux-riscv64
             runs-on: ubuntu-latest
-            bin: udphole-core-linux-riscv64
+            bin: udphole-linux-riscv64
             cross: true
             arch: riscv64
 
           # - name: windows-amd64
           #   runs-on: windows-latest
-          #   bin: udphole-core-windows-amd64.exe
+          #   bin: udphole-windows-amd64.exe
           #   cross: false
 
           - name: darwin-arm64
             runs-on: macos-latest
-            bin: udphole-core-darwin-arm64
+            bin: udphole-darwin-arm64
             cross: false
 
     steps:
@@ -71,7 +71,7 @@ jobs:
 
       - name: Install dependencies
         shell: bash
-        run: cd core && dep install
+        run: dep install
 
       - if: matrix.cross
         uses: uraimo/run-on-arch-action@v2
@@ -84,7 +84,6 @@ jobs:
             apt-get update -y
             apt-get install -yq build-essential
           run: |
-            cd core
             make -j udphole VERSION=${{ needs.version.outputs.version }}
             mv udphole ${{ matrix.bin }}
 
@@ -92,7 +91,6 @@ jobs:
         name: Build
         shell: bash
         run: |
-          cd core
           make -j udphole VERSION=${{ needs.version.outputs.version }}
           mv udphole ${{ matrix.bin }}
 
@@ -100,7 +98,7 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: core/${{ matrix.bin }}
+          file: ${{ matrix.bin }}
           file_glob: false
           overwrite: true
           tag: ${{ github.ref }}
