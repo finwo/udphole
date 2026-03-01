@@ -156,6 +156,8 @@ function parseResp(data) {
         result.push(parseInt(lines[i].substring(1), 10));
       } else if (lines[i].startsWith('+')) {
         result.push(lines[i].substring(1));
+      } else if (lines[i].startsWith('-')) {
+        throw new Error(lines[i].substring(1));
       }
       i++;
     }

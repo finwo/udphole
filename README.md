@@ -196,6 +196,13 @@ The API uses the RESP2 (Redis) protocol. Connect with `redis-cli` or any Redis c
 | `session.forward.create <session_id> <src_socket_id> <dst_socket_id>` | `+OK` |
 | `session.forward.destroy <session_id> <src_socket_id> <dst_socket_id>` | `+OK` |
 
+### System commands
+
+| Command | Response |
+|---------|----------|
+| `system.load` | Array: `[1min, 5min, 15min]` load averages |
+| `session.count` | Integer: number of active sessions |
+
 ---
 
 A generic session-based UDP wormhole proxy.
