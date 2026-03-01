@@ -121,6 +121,8 @@ test: $(BIN)
 	@node test/cluster-basic.js
 	@sleep 1
 	@node test/cluster-integration.js
+	@sleep 1
+	@node test/connect-drop-unknown.js
 
 .PHONY: clean
 clean:
