@@ -108,9 +108,13 @@ $(BIN): $(OBJ)
 
 .PHONY: test
 test: $(BIN)
-	@node test/basic-forwarding.js
-	@sleep 2
-	@node test/listen-relearn.js
+	@node test/basic-forwarding-tcp.js
+	@sleep 1
+	@node test/basic-forwarding-unix.js
+	@sleep 1
+	@node test/listen-relearn-tcp.js
+	@sleep 1
+	@node test/listen-relearn-unix.js
 
 .PHONY: clean
 clean:

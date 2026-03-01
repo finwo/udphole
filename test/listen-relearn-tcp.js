@@ -9,7 +9,7 @@ const {
   TIMEOUT
 } = require('./helpers');
 
-const CONFIG_PATH = path.join(__dirname, 'config.ini');
+const CONFIG_PATH = path.join(__dirname, 'config-tcp.ini');
 const API_PORT = 9123;
 
 function sendUdpFromPort(srcPort, dstPort, message) {

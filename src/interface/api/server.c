@@ -429,6 +429,18 @@ static int *create_listen_socket(const char *listen_addr) {
     const char *cfg_port = resp_map_get_string(api_sec, "port");
     if (cfg_port && cfg_port[0]) default_port = cfg_port;
   }
+
+  if (listen_addr && strncmp(listen_addr, "unix://", 7) == 0) {
+    const char *socket_path = listen_addr + 7;
+    const char *socket_owner = api_sec ? resp_map_get_string(api_sec, "socket_owner") : NULL;
+    int *fds = unix_listen(socket_path, SOCK_STREAM, socket_owner);
+    if (!fds) {
+      return NULL;
+    }
+    log_info("api: listening on %s", listen_addr);
+    return fds;
+  }
+
   int *fds = tcp_listen(listen_addr, NULL, default_port);
   if (!fds) {
     return NULL;

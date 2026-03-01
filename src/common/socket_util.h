@@ -15,8 +15,9 @@ int *tcp_listen(const char *addr, const char *default_host, const char *default_
 int *udp_recv(const char *addr, const char *default_host, const char *default_port);
 
 /* Create Unix domain socket. path is the socket path, sock_type is SOCK_DGRAM or SOCK_STREAM.
+ * owner is optional and can be "user" or "user:group" to set socket ownership.
  * Returns int array: index 0 = count, index 1 = socket fd. Caller must free.
  * On error returns NULL. */
-int *unix_listen(const char *path, int sock_type);
+int *unix_listen(const char *path, int sock_type, const char *owner);
 
 #endif
