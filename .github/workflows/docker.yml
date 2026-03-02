@@ -1,5 +1,5 @@
 ---
-name: Docker Build & Push
+name: Build & Push
 
 on:
   push:
@@ -12,15 +12,83 @@ on:
   pull_request:
     branches:
       - main
-  workflow_dispatch:
-
-env:
-  REGISTRY: docker.io
-  IMAGE_NAME: finwo/udphole
 
 jobs:
+  version:
+    name: Extract version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          else
+            echo "version=latest" >> $GITHUB_OUTPUT
+          fi
+
+  build-binaries:
+    name: Build binaries
+    runs-on: ubuntu-latest
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - name: linux-amd64
+            bin: udphole-linux-amd64
+            cross: false
+
+          - name: linux-arm64
+            arch: aarch64
+            bin: udphole-linux-arm64
+            cross: true
+
+          - name: linux-riscv64
+            arch: riscv64
+            bin: udphole-linux-riscv64
+            cross: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: finwo/dep@main
+        name: Install dep
+
+      - name: Install dependencies
+        run: dep install
+
+      - if: '!matrix.cross'
+        name: Build native
+        run: |
+          make -j udphole VERSION=${{ needs.version.outputs.version }}
+          mv udphole ${{ matrix.bin }}
+
+      - if: matrix.cross
+        uses: uraimo/run-on-arch-action@v3
+        name: Build cross
+        with:
+          arch: ${{ matrix.arch }}
+          distro: ubuntu24.04
+          githubToken: ${{ github.token }}
+          install: |
+            apt-get update -y
+            apt-get install -yq build-essential
+          run: |
+            make -j udphole VERSION=${{ needs.version.outputs.version }}
+            mv udphole ${{ matrix.bin }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.bin }}
+          path: ${{ matrix.bin }}
+          retention-days: 1
+
   docker:
     runs-on: ubuntu-latest
+    needs: [version, build-binaries]
     permissions:
       contents: read
       packages: write
@@ -35,6 +103,13 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: .
+          pattern: udphole-linux-*
+          merge-multiple: true
+
       - name: Log in to Docker Hub
         if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
@@ -46,7 +121,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: docker.io/finwo/udphole
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -66,3 +141,14 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: VERSION=${{ needs.version.outputs.version }}
+
+      - name: Update Docker Hub description
+        if: github.event_name != 'pull_request'
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: finwo/udphole
+          short-description: "UDP hole punching proxy with RESP2 API"
+          readme-filepath: README.md
