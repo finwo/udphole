@@ -3,14 +3,15 @@
 
 #include <stdint.h>
 
-#include "domain/scheduler.h"
+#include "common/scheduler.h"
 #include "common/resp.h"
 
 typedef struct {
   int64_t last_cleanup;
+  int initialized;
 } session_manager_udata_t;
 
-PT_THREAD(session_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *task));
+int session_manager_pt(int64_t timestamp, struct pt_task *task);
 
 resp_object *domain_session_create(const char *cmd, resp_object *args);
 resp_object *domain_session_list(const char *cmd, resp_object *args);

@@ -13,8 +13,7 @@
 #include <arpa/inet.h>
 
 #include "rxi/log.h"
-#include "domain/protothreads.h"
-#include "domain/scheduler.h"
+#include "common/scheduler.h"
 #include "domain/config.h"
 #include "common/socket_util.h"
 #include "common/resp.h"
@@ -54,7 +53,6 @@ typedef struct session {
   int marked_for_deletion;
   int *ready_fds;
   int *all_fds;
-  struct pt pt;
   struct pt_task *task;
 } session_t;
 
@@ -376,111 +374,102 @@ static socket_t *find_socket_by_fd(session_t *s, int fd) {
   return NULL;
 }
 
-PT_THREAD(session_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
+int session_pt(int64_t timestamp, struct pt_task *task) {
+  (void)timestamp;
   session_t *s = task->udata;
 
-  PT_BEGIN(pt);
-
-  char buffer[BUFFER_SIZE];
-
-  for (;;) {
-    if (s->marked_for_deletion) {
-      break;
-    }
-
-    if (!s->sockets || s->sockets_count == 0) {
-      PT_YIELD(pt);
-      continue;
-    }
-
-    s->all_fds = realloc(s->all_fds, sizeof(int) * (s->sockets_count * 2 + 1));
-    if (!s->all_fds) {
-      PT_YIELD(pt);
-      continue;
-    }
-    s->all_fds[0] = 0;
-
-    for (size_t j = 0; j < s->sockets_count; j++) {
-      socket_t *sock = s->sockets[j];
-      if (!sock || !sock->fds) continue;
-      for (int i = 1; i <= sock->fds[0]; i++) {
-        s->all_fds[++s->all_fds[0]] = sock->fds[i];
-      }
-    }
-
-    if (s->all_fds[0] == 0) {
-      PT_YIELD(pt);
-      continue;
-    }
-
-    PT_WAIT_UNTIL(pt, domain_schedmod_has_data(s->all_fds, &s->ready_fds) > 0);
-
-    if (!s->ready_fds || s->ready_fds[0] == 0) {
-      PT_YIELD(pt);
-      continue;
-    }
-
-    for (int r = 1; r <= s->ready_fds[0]; r++) {
-      int ready_fd = s->ready_fds[r];
-
-      socket_t *src_sock = find_socket_by_fd(s, ready_fd);
-      if (!src_sock) continue;
-
-      struct sockaddr_storage from_addr;
-      socklen_t from_len = sizeof(from_addr);
-      ssize_t n = recvfrom(ready_fd, buffer, sizeof(buffer) - 1, 0,
-                           (struct sockaddr *)&from_addr, &from_len);
-
-      if (n <= 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-          log_warn("udphole: recvfrom error on socket %s: %s",
-                   src_sock->socket_id, strerror(errno));
-        }
-        continue;
-      }
-
-      s->last_activity = time(NULL);
-
-      if (src_sock->mode == 0 && !src_sock->learned_valid) {
-        src_sock->learned_addr = from_addr;
-        src_sock->learned_addrlen = from_len;
-        src_sock->learned_valid = 1;
-        log_debug("udphole: socket %s learned remote address", src_sock->socket_id);
-      }
-
-      for (size_t i = 0; i < s->forwards_count; i++) {
-        if (strcmp(s->forwards[i].src_socket_id, src_sock->socket_id) != 0) {
-          continue;
-        }
-
-        socket_t *dst_sock = find_socket(s, s->forwards[i].dst_socket_id);
-        if (!dst_sock || !dst_sock->fds || dst_sock->fds[0] == 0) continue;
-
-        struct sockaddr *dest_addr = NULL;
-        socklen_t dest_addrlen = 0;
-
-        if (dst_sock->mode == 1) {
-          dest_addr = (struct sockaddr *)&dst_sock->remote_addr;
-          dest_addrlen = dst_sock->remote_addrlen;
-        } else if (dst_sock->learned_valid) {
-          dest_addr = (struct sockaddr *)&dst_sock->learned_addr;
-          dest_addrlen = dst_sock->learned_addrlen;
-        }
-
-        if (dest_addr && dest_addrlen > 0) {
-          int dst_fd = dst_sock->fds[1];
-          ssize_t sent = sendto(dst_fd, buffer, n, 0, dest_addr, dest_addrlen);
-          if (sent < 0) {
-            log_warn("udphole: forward failed %s -> %s: %s",
-                     src_sock->socket_id, dst_sock->socket_id, strerror(errno));
-          }
-        }
-      }
-    }
-
+  if (s->marked_for_deletion) {
+    goto cleanup;
   }
 
-  log_debug("udphole: session %s protothread exiting", s->session_id);
+  if (!s->sockets || s->sockets_count == 0) {
+    return SCHED_RUNNING;
+  }
+
+  s->all_fds = realloc(s->all_fds, sizeof(int) * (s->sockets_count * 2 + 1));
+  if (!s->all_fds) {
+    return SCHED_RUNNING;
+  }
+  s->all_fds[0] = 0;
+
+  for (size_t j = 0; j < s->sockets_count; j++) {
+    socket_t *sock = s->sockets[j];
+    if (!sock || !sock->fds) continue;
+    for (int i = 1; i <= sock->fds[0]; i++) {
+      s->all_fds[++s->all_fds[0]] = sock->fds[i];
+    }
+  }
+
+  if (s->all_fds[0] == 0) {
+    return SCHED_RUNNING;
+  }
+
+  int ready_fd = sched_has_data(s->all_fds);
+  if (ready_fd < 0) {
+    return SCHED_RUNNING;
+  }
+
+  char buffer[BUFFER_SIZE];
+  socket_t *src_sock = find_socket_by_fd(s, ready_fd);
+  if (!src_sock) {
+    return SCHED_RUNNING;
+  }
+
+  struct sockaddr_storage from_addr;
+  socklen_t from_len = sizeof(from_addr);
+  ssize_t n = recvfrom(ready_fd, buffer, sizeof(buffer) - 1, 0,
+                       (struct sockaddr *)&from_addr, &from_len);
+
+  if (n <= 0) {
+    if (errno != EAGAIN && errno != EWOULDBLOCK) {
+      log_warn("udphole: recvfrom error on socket %s: %s",
+               src_sock->socket_id, strerror(errno));
+    }
+    return SCHED_RUNNING;
+  }
+
+  s->last_activity = time(NULL);
+
+  if (src_sock->mode == 0 && !src_sock->learned_valid) {
+    src_sock->learned_addr = from_addr;
+    src_sock->learned_addrlen = from_len;
+    src_sock->learned_valid = 1;
+    log_debug("udphole: socket %s learned remote address", src_sock->socket_id);
+  }
+
+  for (size_t i = 0; i < s->forwards_count; i++) {
+    if (strcmp(s->forwards[i].src_socket_id, src_sock->socket_id) != 0) {
+      continue;
+    }
+
+    socket_t *dst_sock = find_socket(s, s->forwards[i].dst_socket_id);
+    if (!dst_sock || !dst_sock->fds || dst_sock->fds[0] == 0) continue;
+
+    struct sockaddr *dest_addr = NULL;
+    socklen_t dest_addrlen = 0;
+
+    if (dst_sock->mode == 1) {
+      dest_addr = (struct sockaddr *)&dst_sock->remote_addr;
+      dest_addrlen = dst_sock->remote_addrlen;
+    } else if (dst_sock->learned_valid) {
+      dest_addr = (struct sockaddr *)&dst_sock->learned_addr;
+      dest_addrlen = dst_sock->learned_addrlen;
+    }
+
+    if (dest_addr && dest_addrlen > 0) {
+      int dst_fd = dst_sock->fds[1];
+      ssize_t sent = sendto(dst_fd, buffer, n, 0, dest_addr, dest_addrlen);
+      if (sent < 0) {
+        log_warn("udphole: forward failed %s -> %s: %s",
+                 src_sock->socket_id, dst_sock->socket_id, strerror(errno));
+      }
+    }
+  }
+
+  return SCHED_RUNNING;
+
+cleanup:
+  log_debug("udphole: session %s exiting", s->session_id);
 
   if (s->all_fds) {
     free(s->all_fds);
@@ -491,11 +480,11 @@ PT_THREAD(session_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
     s->ready_fds = NULL;
   }
 
-  PT_END(pt);
+  return SCHED_DONE;
 }
 
 static void spawn_session_pt(session_t *s) {
-  s->task = (struct pt_task *)(intptr_t)domain_schedmod_pt_create(session_pt, s);
+  s->task = (struct pt_task *)(intptr_t)sched_create(session_pt, s);
 }
 
 resp_object *domain_session_create(const char *cmd, resp_object *args) {
@@ -978,29 +967,22 @@ resp_object *domain_session_count(const char *cmd, resp_object *args) {
   return res;
 }
 
-PT_THREAD(session_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
+int session_manager_pt(int64_t timestamp, struct pt_task *task) {
   session_manager_udata_t *udata = task->udata;
-  log_trace("session_manager: protothread entry");
-  PT_BEGIN(pt);
 
-  PT_WAIT_UNTIL(pt, domain_cfg);
-
-  log_info("udphole: manager started with port range %d-%d", domain_cfg->port_low, domain_cfg->port_high);
-
-  for (;;) {
-    if (timestamp - udata->last_cleanup >= 1000) {
-      cleanup_expired_sessions();
-      udata->last_cleanup = timestamp;
-    }
-
-    PT_YIELD(pt);
+  if (!domain_cfg) {
+    return SCHED_RUNNING;
   }
 
-  for (size_t i = 0; i < sessions_count; i++) {
-    if (sessions[i]) {
-      sessions[i]->marked_for_deletion = 1;
-    }
+  if (!udata->initialized) {
+    log_info("udphole: manager started with port range %d-%d", domain_cfg->port_low, domain_cfg->port_high);
+    udata->initialized = 1;
   }
 
-  PT_END(pt);
+  if (timestamp - udata->last_cleanup >= 1000) {
+    cleanup_expired_sessions();
+    udata->last_cleanup = timestamp;
+  }
+
+  return SCHED_RUNNING;
 }

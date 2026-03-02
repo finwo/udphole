@@ -21,15 +21,13 @@
 
 #include "rxi/log.h"
 #include "tidwall/hashmap.h"
-#include "domain/protothreads.h"
-#include "domain/scheduler.h"
+#include "common/scheduler.h"
 #include "common/socket_util.h"
 #include "infrastructure/config.h"
 #include "interface/api/server.h"
 #include "common/resp.h"
 
-struct pt_task;
-PT_THREAD(api_client_pt(struct pt *pt, int64_t timestamp, struct pt_task *task));
+int api_client_pt(int64_t timestamp, struct pt_task *task);
 
 #define API_MAX_CLIENTS   8
 #define READ_BUF_SIZE     4096
@@ -468,40 +466,33 @@ static void handle_accept(int ready_fd) {
   }
   state->fd = fd;
 
-  domain_schedmod_pt_create(api_client_pt, state);
+  sched_create(api_client_pt, state);
   log_trace("api: accepted connection, spawned client pt");
 }
 
-PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
+int api_server_pt(int64_t timestamp, struct pt_task *task) {
+  (void)timestamp;
   api_server_udata_t *udata = task->udata;
-  log_trace("api_server: protothread entry");
-  PT_BEGIN(pt);
 
   if (!udata) {
     udata = calloc(1, sizeof(api_server_udata_t));
     if (!udata) {
-      PT_EXIT(pt);
+      return SCHED_ERROR;
     }
     task->udata = udata;
   }
 
-  resp_object *api_sec = resp_map_get(global_cfg, "udphole");
-  const char *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
+  if (udata->server_fds == NULL) {
+    resp_object *api_sec = resp_map_get(global_cfg, "udphole");
+    const char *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
 
-  log_info("api: initial listen config check: %s", listen_str ? listen_str : "(null)");
+    if (!listen_str || !listen_str[0]) {
+      return SCHED_RUNNING;
+    }
 
-  if (!listen_str || !listen_str[0]) {
-    log_info("api: no listen address configured, waiting...");
-    PT_WAIT_UNTIL(pt, current_listen || (api_sec = resp_map_get(global_cfg, "udphole"), 
-           (listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL),
-           listen_str && listen_str[0]));
-    log_info("api: after wait, listen config: %s", listen_str ? listen_str : "(null)");
-  }
-
-  if (!current_listen && listen_str && listen_str[0]) {
     current_listen = strdup(listen_str);
     if (!current_listen) {
-      PT_EXIT(pt);
+      return SCHED_ERROR;
     }
     init_builtins();
     udata->server_fds = create_listen_socket(current_listen);
@@ -509,124 +500,94 @@ PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
       log_fatal("api: failed to listen on %s", current_listen);
       free(current_listen);
       current_listen = NULL;
-      exit(1);
+      return SCHED_ERROR;
     }
   }
 
-  for (;;) {
-    if (udata->server_fds && udata->server_fds[0] > 0) {
-      PT_WAIT_UNTIL(pt, domain_schedmod_has_data(udata->server_fds, &udata->ready_fds) > 0);
-      if (udata->ready_fds && udata->ready_fds[0] > 0) {
-        for (int i = 1; i <= udata->ready_fds[0]; i++) {
-          handle_accept(udata->ready_fds[i]);
-        }
-      }
-    if (udata->ready_fds) free(udata->ready_fds);
-      udata->ready_fds = NULL;
-    } else {
-      PT_YIELD(pt);
+  if (udata->server_fds && udata->server_fds[0] > 0) {
+    int ready_fd = sched_has_data(udata->server_fds);
+    if (ready_fd >= 0) {
+      handle_accept(ready_fd);
     }
-  }
-  if (udata->server_fds) {
-    for (int i = 1; i <= udata->server_fds[0]; i++) {
-      close(udata->server_fds[i]);
-    }
-    free(udata->server_fds);
-  }
-  free(udata->ready_fds);
-  free(udata);
-  free(current_listen);
-  current_listen = NULL;
-  if (cmd_map) {
-    hashmap_free(cmd_map);
-    cmd_map = NULL;
-  }
-  if (domain_cmd_map) {
-    hashmap_free(domain_cmd_map);
-    domain_cmd_map = NULL;
   }
 
-  PT_END(pt);
+  return SCHED_RUNNING;
 }
 
-PT_THREAD(api_client_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
+int api_client_pt(int64_t timestamp, struct pt_task *task) {
+  (void)timestamp;
   api_client_t *state = task->udata;
 
-  log_trace("api_client: protothread entry fd=%d", state->fd);
-  PT_BEGIN(pt);
-
-  state->fds = malloc(sizeof(int) * 2);
   if (!state->fds) {
-    free(state);
-    PT_EXIT(pt);
+    state->fds = malloc(sizeof(int) * 2);
+    if (!state->fds) {
+      free(state);
+      return SCHED_DONE;
+    }
+    state->fds[0] = 1;
+    state->fds[1] = state->fd;
   }
-  state->fds[0] = 1;
-  state->fds[1] = state->fd;
 
-  for (;;) {
-    state->ready_fds = NULL;
-    PT_WAIT_UNTIL(pt, domain_schedmod_has_data(state->fds, &state->ready_fds) > 0);
+  int ready_fd = sched_has_data(state->fds);
+  if (ready_fd < 0) {
+    return SCHED_RUNNING;
+  }
 
-    state->ready_fd = -1;
-    if (state->ready_fds && state->ready_fds[0] > 0) {
-      for (int i = 1; i <= state->ready_fds[0]; i++) {
-        if (state->ready_fds[i] == state->fd) {
-          state->ready_fd = state->fd;
-          break;
-        }
-      }
+  if (ready_fd != state->fd) {
+    return SCHED_RUNNING;
+  }
+
+  char buf[1];
+  ssize_t n = recv(state->fd, buf, 1, MSG_PEEK);
+  if (n <= 0) {
+    goto cleanup;
+  }
+
+  resp_object *cmd = resp_read(state->fd);
+  if (!cmd) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      return SCHED_RUNNING;
     }
-    free(state->ready_fds);
-    state->ready_fds = NULL;
+    goto cleanup;
+  }
 
-    char buf[1];
-    ssize_t n = recv(state->fd, buf, 1, MSG_PEEK);
-    if (n <= 0) {
-      break;
-    }
-
-    resp_object *cmd = resp_read(state->fd);
-    if (!cmd) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        PT_YIELD(pt);
-        continue;
-      }
-      break;
-    }
-
-    if (cmd->type != RESPT_ARRAY || cmd->u.arr.n == 0) {
-      resp_free(cmd);
-      api_write_err(state, "Protocol error");
-      client_flush(state);
-      continue;
-    }
-
-    char *args[MAX_ARGS];
-    int nargs = 0;
-    for (size_t i = 0; i < cmd->u.arr.n && nargs < MAX_ARGS; i++) {
-      resp_object *elem = &cmd->u.arr.elem[i];
-      if (elem->type == RESPT_BULK && elem->u.s) {
-        args[nargs++] = elem->u.s;
-        elem->u.s = NULL;
-      } else if (elem->type == RESPT_SIMPLE) {
-        args[nargs++] = elem->u.s ? elem->u.s : "";
-      }
-    }
-
-    if (nargs > 0) {
-      dispatch_command(state, args, nargs);
-    }
-
-    for (int j = 0; j < nargs; j++) {
-      free(args[j]);
-    }
+  if (cmd->type != RESPT_ARRAY || cmd->u.arr.n == 0) {
     resp_free(cmd);
-
+    api_write_err(state, "Protocol error");
     client_flush(state);
-
-    if (state->fd < 0) break;
+    return SCHED_RUNNING;
   }
 
+  char *args[MAX_ARGS];
+  int nargs = 0;
+  for (size_t i = 0; i < cmd->u.arr.n && nargs < MAX_ARGS; i++) {
+    resp_object *elem = &cmd->u.arr.elem[i];
+    if (elem->type == RESPT_BULK && elem->u.s) {
+      args[nargs++] = elem->u.s;
+      elem->u.s = NULL;
+    } else if (elem->type == RESPT_SIMPLE) {
+      args[nargs++] = elem->u.s ? elem->u.s : "";
+    }
+  }
+
+  if (nargs > 0) {
+    dispatch_command(state, args, nargs);
+  }
+
+  for (int j = 0; j < nargs; j++) {
+    free(args[j]);
+  }
+  resp_free(cmd);
+
+  client_flush(state);
+
+  if (state->fd < 0) {
+    goto cleanup;
+  }
+
+  return SCHED_RUNNING;
+
+cleanup:
   if (state->fd >= 0) {
     close(state->fd);
   }
@@ -634,6 +595,5 @@ PT_THREAD(api_client_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
   free(state->wbuf);
   free(state->username);
   free(state);
-
-  PT_END(pt);
+  return SCHED_DONE;
 }

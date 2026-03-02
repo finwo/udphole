@@ -108,6 +108,10 @@ $(BIN): $(OBJ)
 
 .PHONY: test
 test: $(BIN)
+	@gcc -Wall -O2 -I src -D INI_HANDLER_LINENO=1 test/test_scheduler.c src/common/scheduler.c -o test-scheduler
+	@./test-scheduler
+	@rm -f test-scheduler
+	@sleep 1
 	@node test/system-commands.js
 	@sleep 1
 	@node test/basic-forwarding-tcp.js
