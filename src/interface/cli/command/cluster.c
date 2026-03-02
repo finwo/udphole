@@ -24,6 +24,8 @@
 static cluster_node_t *cluster_nodes = NULL;
 static const char *cluster_listen = NULL;
 
+PT_THREAD(cluster_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *task));
+
 typedef struct {
   int64_t last_health_check;
 } cluster_udata_t;
@@ -128,19 +130,6 @@ static void cluster_health_check(void) {
   }
 }
 
-static void cluster_refresh_session_counts(void) {
-  cluster_node_t *node = cluster_nodes;
-  while (node) {
-    if (node->available) {
-      int count = cluster_node_get_session_count(node);
-      if (count >= 0) {
-        node->session_count = count;
-      }
-    }
-    node = node->next;
-  }
-}
-
 static cluster_node_t *cluster_select_node(void) {
   cluster_node_t *best = NULL;
   cluster_node_t *node = cluster_nodes;
@@ -168,15 +157,6 @@ static cluster_node_t *cluster_find_session_node(const char *session_id) {
     }
     node = node->next;
   }
-  return NULL;
-}
-
-static resp_object *cluster_forward_to_node(cluster_node_t *node, const char *cmd, resp_object *args) {
-  if (!node || node->fd < 0) return NULL;
-
-  resp_object *resp = cluster_node_send_command(node, cmd, NULL);
-  if (resp) return resp;
-
   return NULL;
 }
 
@@ -356,7 +336,6 @@ static resp_object *cluster_handle_command(const char *cmd, resp_object *args) {
 
   if (strcmp(cmd, "system.load") == 0) {
     resp_object *result = resp_array_init();
-    char buf[64];
 
     resp_array_append_bulk(result, "1min");
     resp_array_append_bulk(result, "0.00");
@@ -478,8 +457,26 @@ int cli_cmd_cluster(int argc, const char **argv) {
   udata->last_health_check = 0;
 
   domain_schedmod_pt_create(api_server_pt, NULL);
+  domain_schedmod_pt_create(cluster_manager_pt, udata);
 
   log_info("udphole: cluster daemon started");
 
   return domain_schedmod_main();
+}
+
+PT_THREAD(cluster_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
+  cluster_udata_t *udata = task->udata;
+  PT_BEGIN(pt);
+
+  PT_WAIT_UNTIL(pt, cluster_nodes);
+
+  for (;;) {
+    if (timestamp - udata->last_health_check >= HEALTH_CHECK_INTERVAL * 1000) {
+      cluster_health_check();
+      udata->last_health_check = timestamp;
+    }
+    PT_YIELD(pt);
+  }
+
+  PT_END(pt);
 }

@@ -107,8 +107,10 @@ int cli_cmd_daemon(int argc, const char **argv) {
 
   log_info("udphole: starting daemon");
 
+  session_manager_udata_t *session_udata = calloc(1, sizeof(session_manager_udata_t));
+
   domain_schedmod_pt_create(api_server_pt, NULL);
-  domain_schedmod_pt_create(session_manager_pt, NULL);
+  domain_schedmod_pt_create(session_manager_pt, session_udata);
 
   log_info("udphole: daemon started");
 

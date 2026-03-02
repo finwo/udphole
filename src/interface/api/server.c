@@ -157,85 +157,6 @@ static void client_flush(api_client_t *c) {
   }
 }
 
-static int parse_inline(const char *line, size_t len, char **args, int max_args) {
-  int nargs = 0;
-  const char *p = line;
-  const char *end = line + len;
-  while (p < end && nargs < max_args) {
-    while (p < end && (*p == ' ' || *p == '\t')) p++;
-    if (p >= end) break;
-    const char *start;
-    const char *tok_end;
-    if (*p == '"' || *p == '\'') {
-      char quote = *p++;
-      start = p;
-      while (p < end && *p != quote) p++;
-      tok_end = p;
-      if (p < end) p++;
-    } else {
-      start = p;
-      while (p < end && *p != ' ' && *p != '\t') p++;
-      tok_end = p;
-    }
-    size_t tlen = (size_t)(tok_end - start);
-    char *arg = malloc(tlen + 1);
-    if (!arg) return -1;
-    memcpy(arg, start, tlen);
-    arg[tlen] = '\0';
-    args[nargs++] = arg;
-  }
-  return nargs;
-}
-
-static int parse_resp_command(api_client_t *c, char **args, int max_args, int *nargs) {
-  *nargs = 0;
-  if (c->rlen == 0) return 0;
-
-  if (c->rbuf[0] != '*') {
-    char *nl = memchr(c->rbuf, '\n', c->rlen);
-    if (!nl) return 0;
-    size_t line_len = (size_t)(nl - c->rbuf);
-    size_t trim = line_len;
-    if (trim > 0 && c->rbuf[trim - 1] == '\r') trim--;
-    int n = parse_inline(c->rbuf, trim, args, max_args);
-    if (n < 0) return -1;
-    *nargs = n;
-    size_t consumed = line_len + 1;
-    c->rlen -= consumed;
-    if (c->rlen > 0) memmove(c->rbuf, c->rbuf + consumed, c->rlen);
-    return n > 0 ? 1 : 0;
-  }
-
-  size_t pos = 0;
-  char *nl = memchr(c->rbuf + pos, '\n', c->rlen - pos);
-  if (!nl) return 0;
-  int count = atoi(c->rbuf + 1);
-  if (count <= 0 || count > max_args) return -1;
-  pos = (size_t)(nl - c->rbuf) + 1;
-
-  for (int i = 0; i < count; i++) {
-    if (pos >= c->rlen) return 0;
-    if (c->rbuf[pos] != '$') return -1;
-    nl = memchr(c->rbuf + pos, '\n', c->rlen - pos);
-    if (!nl) return 0;
-    int blen = atoi(c->rbuf + pos + 1);
-    if (blen < 0) return -1;
-    size_t hdr_end = (size_t)(nl - c->rbuf) + 1;
-    if (hdr_end + (size_t)blen + 2 > c->rlen) return 0;
-    char *arg = malloc((size_t)blen + 1);
-    if (!arg) return -1;
-    memcpy(arg, c->rbuf + hdr_end, (size_t)blen);
-    arg[blen] = '\0';
-    args[i] = arg;
-    pos = hdr_end + (size_t)blen + 2;
-  }
-
-  *nargs = count;
-  c->rlen -= pos;
-  if (c->rlen > 0) memmove(c->rbuf, c->rbuf + pos, c->rlen);
-  return 1;
-}
-
 static bool permit_matches(const char *pattern, const char *cmd) {
   size_t plen = strlen(pattern);
   if (plen == 1 && pattern[0] == '*')
@@ -587,7 +508,6 @@ PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
   }
 
   for (;;) {
-    (void)timestamp;
     if (udata->server_fds && udata->server_fds[0] > 0) {
       PT_WAIT_UNTIL(pt, domain_schedmod_has_data(udata->server_fds, &udata->ready_fds) > 0);
       if (udata->ready_fds && udata->ready_fds[0] > 0) {
@@ -624,7 +544,6 @@ PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
 }
 
 PT_THREAD(api_client_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
-  (void)timestamp;
   api_client_t *state = task->udata;
 
   log_trace("api_client: protothread entry fd=%d", state->fd);

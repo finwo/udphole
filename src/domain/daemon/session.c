@@ -60,7 +60,6 @@ typedef struct session {
 
 static session_t **sessions = NULL;
 static size_t sessions_count = 0;
-static int running = 0;
 
 static session_t *find_session(const char *session_id) {
   for (size_t i = 0; i < sessions_count; i++) {
@@ -69,18 +68,6 @@ static session_t *find_session(const char *session_id) {
     }
   }
   return NULL;
-}
-
-static uint64_t socket_hash(const void *item, uint64_t seed0, uint64_t seed1) {
-  const socket_t *s = item;
-  return hashmap_sip(s->socket_id, strlen(s->socket_id), seed0, seed1);
-}
-
-static int socket_compare(const void *a, const void *b, void *udata) {
-  (void)udata;
-  const socket_t *sa = a;
-  const socket_t *sb = b;
-  return strcmp(sa->socket_id, sb->socket_id);
 }
 
 static socket_t *find_socket(session_t *s, const char *socket_id) {
@@ -392,7 +379,6 @@ static socket_t *find_socket_by_fd(session_t *s, int fd) {
 PT_THREAD(session_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
   session_t *s = task->udata;
 
-  (void)timestamp;
   PT_BEGIN(pt);
 
   char buffer[BUFFER_SIZE];
@@ -993,28 +979,22 @@ resp_object *domain_session_count(const char *cmd, resp_object *args) {
 }
 
 PT_THREAD(session_manager_pt(struct pt *pt, int64_t timestamp, struct pt_task *task)) {
-  (void)timestamp;
+  session_manager_udata_t *udata = task->udata;
   log_trace("session_manager: protothread entry");
   PT_BEGIN(pt);
 
   PT_WAIT_UNTIL(pt, domain_cfg);
 
-  running = 1;
   log_info("udphole: manager started with port range %d-%d", domain_cfg->port_low, domain_cfg->port_high);
 
-  int64_t last_cleanup = 0;
-
   for (;;) {
-    int64_t now = (int64_t)(time(NULL));
-    if (now - last_cleanup >= 1) {
+    if (timestamp - udata->last_cleanup >= 1000) {
       cleanup_expired_sessions();
-      last_cleanup = now;
+      udata->last_cleanup = timestamp;
     }
 
     PT_YIELD(pt);
   }
-
-  running = 0;
 
   for (size_t i = 0; i < sessions_count; i++) {
     if (sessions[i]) {
