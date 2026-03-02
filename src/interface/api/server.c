@@ -487,12 +487,18 @@ PT_THREAD(api_server_pt(struct pt *pt, int64_t timestamp, struct pt_task *task))
 
   resp_object *api_sec = resp_map_get(global_cfg, "udphole");
   const char *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
+
+  log_info("api: initial listen config check: %s", listen_str ? listen_str : "(null)");
+
   if (!listen_str || !listen_str[0]) {
-    log_info("api: no listen address configured, API server disabled");
-    PT_EXIT(pt);
+    log_info("api: no listen address configured, waiting...");
+    PT_WAIT_UNTIL(pt, current_listen || (api_sec = resp_map_get(global_cfg, "udphole"), 
+           (listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL),
+           listen_str && listen_str[0]));
+    log_info("api: after wait, listen config: %s", listen_str ? listen_str : "(null)");
   }
 
-  if (!current_listen) {
+  if (!current_listen && listen_str && listen_str[0]) {
     current_listen = strdup(listen_str);
     if (!current_listen) {
       PT_EXIT(pt);

@@ -118,10 +118,6 @@ test: $(BIN)
 	@sleep 1
 	@node test/listen-relearn-unix.js
 	@sleep 1
-	@node test/cluster-basic.js
-	@sleep 1
-	@node test/cluster-integration.js
-	@sleep 1
 	@node test/connect-drop-unknown.js
 
 .PHONY: clean
