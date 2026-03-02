@@ -1,13 +1,14 @@
+#include "cluster.h"
+
+#include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <math.h>
 
-#include "rxi/log.h"
 #include "common/resp.h"
 #include "common/scheduler.h"
 #include "domain/config.h"
-#include "cluster.h"
+#include "rxi/log.h"
 
 cluster_state_t *cluster_state = NULL;
 
@@ -21,12 +22,12 @@ static int is_session_not_found(resp_object *resp) {
 }
 
 static resp_object *cluster_forward_to_nodes(const char *cmd_str) {
-  size_t available_count = 0;
-  cluster_node_t **available = cluster_nodes_get_available(cluster_state->nodes, &available_count);
+  size_t           available_count = 0;
+  cluster_node_t **available       = cluster_nodes_get_available(cluster_state->nodes, &available_count);
 
   if (!available || available_count == 0) {
     free(available);
-  return resp_error_init("ERR no available nodes");
+    return resp_error_init("ERR no available nodes");
   }
 
   for (size_t i = 0; i < available_count; i++) {
@@ -64,7 +65,7 @@ void cluster_init(void) {
     cluster_shutdown();
   }
 
-  cluster_state = calloc(1, sizeof(cluster_state_t));
+  cluster_state        = calloc(1, sizeof(cluster_state_t));
   cluster_state->nodes = cluster_nodes_create();
 
   if (!domain_cfg) return;
@@ -79,22 +80,22 @@ void cluster_init(void) {
   for (size_t i = 0; i < cluster_nodes->u.arr.n; i++) {
     resp_object *elem = &cluster_nodes->u.arr.elem[i];
     if (elem->type != RESPT_BULK || !elem->u.s) continue;
-    
+
     const char *node_name = elem->u.s;
-    
+
     char node_section[256];
     snprintf(node_section, sizeof(node_section), "cluster:%s", node_name);
     resp_object *node_sec = resp_map_get(domain_cfg, node_section);
-    
-    const char *address = node_sec ? resp_map_get_string(node_sec, "address") : NULL;
+
+    const char *address  = node_sec ? resp_map_get_string(node_sec, "address") : NULL;
     const char *username = node_sec ? resp_map_get_string(node_sec, "username") : NULL;
     const char *password = node_sec ? resp_map_get_string(node_sec, "password") : NULL;
-    
+
     if (!address) {
       log_error("cluster: node '%s' has no address configured", node_name);
       continue;
     }
-    
+
     cluster_node_t *node = calloc(1, sizeof(cluster_node_t));
     if (cluster_node_init(node, node_name, address, username, password) == 0) {
       cluster_nodes_add(cluster_state->nodes, node);
@@ -124,7 +125,7 @@ void cluster_shutdown(void) {
 }
 
 static char *serialize_args(resp_object *args) {
-  char *cmd_str = NULL;
+  char  *cmd_str = NULL;
   size_t cmd_len = 0;
   resp_serialize(args, &cmd_str, &cmd_len);
   return cmd_str;
@@ -141,20 +142,20 @@ resp_object *cluster_session_create(const char *cmd, resp_object *args) {
     return resp_error_init("ERR failed to serialize command");
   }
 
-  cluster_node_t *selected_node = NULL;
-  double selected_ratio = -1.0;
-  resp_object *resp = NULL;
+  cluster_node_t *selected_node  = NULL;
+  double          selected_ratio = -1.0;
+  resp_object    *resp           = NULL;
 
   for (int attempt = 0; attempt < 10; attempt++) {
-    size_t available_count = 0;
-    cluster_node_t **available = cluster_nodes_get_available(cluster_state->nodes, &available_count);
+    size_t           available_count = 0;
+    cluster_node_t **available       = cluster_nodes_get_available(cluster_state->nodes, &available_count);
 
     if (!available || available_count == 0) {
       free(available);
       break;
     }
 
-    selected_node = NULL;
+    selected_node  = NULL;
     selected_ratio = -1.0;
 
     for (size_t i = 0; i < available_count; i++) {
@@ -168,7 +169,8 @@ resp_object *cluster_session_create(const char *cmd, resp_object *args) {
       size_t node_session_count = 0;
       if (count_str) {
         resp_object *count_resp = NULL;
-        if (cluster_node_send_command(node, count_str, &count_resp) == 0 && count_resp && count_resp->type == RESPT_INT) {
+        if (cluster_node_send_command(node, count_str, &count_resp) == 0 && count_resp &&
+            count_resp->type == RESPT_INT) {
           node_session_count = (size_t)count_resp->u.i;
         }
         if (count_resp) resp_free(count_resp);
@@ -177,7 +179,7 @@ resp_object *cluster_session_create(const char *cmd, resp_object *args) {
 
       double ratio = (double)node_session_count / (double)node->weight;
       if (selected_node == NULL || ratio < selected_ratio) {
-        selected_node = node;
+        selected_node  = node;
         selected_ratio = ratio;
       }
     }
@@ -213,8 +215,8 @@ resp_object *cluster_session_list(const char *cmd, resp_object *args) {
     return resp_error_init("ERR cluster not initialized");
   }
 
-  size_t available_count = 0;
-  cluster_node_t **available = cluster_nodes_get_available(cluster_state->nodes, &available_count);
+  size_t           available_count = 0;
+  cluster_node_t **available       = cluster_nodes_get_available(cluster_state->nodes, &available_count);
 
   if (!available || available_count == 0) {
     free(available);
@@ -256,12 +258,12 @@ resp_object *cluster_session_info(const char *cmd, resp_object *args) {
     return resp_error_init("ERR cluster not initialized");
   }
 
-  size_t available_count = 0;
-  cluster_node_t **available = cluster_nodes_get_available(cluster_state->nodes, &available_count);
+  size_t           available_count = 0;
+  cluster_node_t **available       = cluster_nodes_get_available(cluster_state->nodes, &available_count);
 
   if (!available || available_count == 0) {
     free(available);
-  return resp_error_init("ERR no available nodes");
+    return resp_error_init("ERR no available nodes");
   }
 
   resp_object *cmd_args = resp_array_init();
@@ -447,15 +449,15 @@ resp_object *cluster_session_count(const char *cmd, resp_object *args) {
     return resp_error_init("ERR cluster not initialized");
   }
 
-  size_t available_count = 0;
-  cluster_node_t **available = cluster_nodes_get_available(cluster_state->nodes, &available_count);
+  size_t           available_count = 0;
+  cluster_node_t **available       = cluster_nodes_get_available(cluster_state->nodes, &available_count);
 
   if (!available || available_count == 0) {
     free(available);
     resp_object *res = malloc(sizeof(resp_object));
     if (!res) return NULL;
     res->type = RESPT_INT;
-    res->u.i = 0;
+    res->u.i  = 0;
     return res;
   }
 
@@ -484,7 +486,7 @@ resp_object *cluster_session_count(const char *cmd, resp_object *args) {
   resp_object *res = malloc(sizeof(resp_object));
   if (!res) return NULL;
   res->type = RESPT_INT;
-  res->u.i = (long long)total_count;
+  res->u.i  = (long long)total_count;
   return res;
 }
 
@@ -498,7 +500,7 @@ resp_object *cluster_system_load(const char *cmd, resp_object *args) {
   }
 
   resp_object *res = resp_array_init();
-  char buf[64];
+  char         buf[64];
 
   resp_array_append_bulk(res, "1min");
   snprintf(buf, sizeof(buf), "%.2f", loadavg[0]);

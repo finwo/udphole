@@ -3,4 +3,4 @@
 
 int cli_cmd_daemon(int argc, const char **argv);
 
-#endif // UDPHOLE_CLI_DAEMON_H
+#endif  // UDPHOLE_CLI_DAEMON_H

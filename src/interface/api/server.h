@@ -1,11 +1,11 @@
 #ifndef UDPHOLE_API_SERVER_H
 #define UDPHOLE_API_SERVER_H
 
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
-#include "common/scheduler.h"
 #include "common/resp.h"
+#include "common/scheduler.h"
 
 struct api_client_state;
 typedef struct api_client_state api_client_t;

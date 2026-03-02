@@ -2,21 +2,20 @@
 extern "C" {
 #endif
 
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <signal.h>
 
 #include "cofyc/argparse.h"
-#include "rxi/log.h"
-
-#include "interface/cli/common.h"
-#include "interface/cli/command/list_commands.h"
-#include "interface/cli/command/daemon.h"
-#include "interface/cli/command/cluster.h"
-#include "infrastructure/config.h"
 #include "domain/cluster/cluster.h"
+#include "infrastructure/config.h"
+#include "interface/cli/command/cluster.h"
+#include "interface/cli/command/daemon.h"
+#include "interface/cli/command/list_commands.h"
+#include "interface/cli/common.h"
+#include "rxi/log.h"
 
 #ifdef __cplusplus
 }
@@ -27,14 +26,14 @@ extern "C" {
 INCTXT(License, "LICENSE.md");
 
 static const char *const usages[] = {
-  "udphole [global] command [local]",
-  "udphole list-commands",
-  "udphole --license",
-  NULL,
+    "udphole [global] command [local]",
+    "udphole list-commands",
+    "udphole --license",
+    NULL,
 };
 
-static FILE *log_file;
-static char *log_path;
+static FILE                 *log_file;
+static char                 *log_path;
 static volatile sig_atomic_t sighup_received;
 
 static void logfile_callback(log_Event *ev) {
@@ -62,7 +61,7 @@ static void sighup_handler(int sig) {
   sighup_received = 1;
 }
 
-#define MARKER_PARAGRAPH "<!-- paragraph -->"
+#define MARKER_PARAGRAPH  "<!-- paragraph -->"
 #define MARKER_LIST_START "<!-- list:start -->"
 #define MARKER_LIST_END   "<!-- list:end -->"
 
@@ -76,7 +75,7 @@ static void print_license_paragraph(const char *start, const char *end, int widt
   while (end > start && (end[-1] == ' ' || end[-1] == '\n' || end[-1] == '\r')) end--;
   if (start >= end) return;
   static char buf[4096];
-  size_t n = (size_t)(end - start);
+  size_t      n = (size_t)(end - start);
   if (n >= sizeof(buf)) n = sizeof(buf) - 1;
   memcpy(buf, start, n);
   buf[n] = '\0';
@@ -88,24 +87,30 @@ static void print_license_paragraph(const char *start, const char *end, int widt
 }
 
 static void print_license_list(const char *start, const char *end, int width) {
-  const int left_col = 5;
-  const char *p = start;
+  const int   left_col = 5;
+  const char *p        = start;
   while (p < end) {
     skip_whitespace(&p);
     if (p >= end) break;
-    if (*p < '0' || *p > '9') { p++; continue; }
+    if (*p < '0' || *p > '9') {
+      p++;
+      continue;
+    }
     const char *num_start = p;
     while (p < end && *p >= '0' && *p <= '9') p++;
     if (p >= end || *p != '.') continue;
     p++;
     skip_whitespace(&p);
     const char *text_start = p;
-    const char *item_end = p;
+    const char *item_end   = p;
     while (item_end < end) {
       const char *next = item_end;
       while (next < end && *next != '\n') next++;
       if (next < end) next++;
-      if (next >= end) { item_end = end; break; }
+      if (next >= end) {
+        item_end = end;
+        break;
+      }
       skip_whitespace(&next);
       if (next < end && *next >= '0' && *next <= '9') {
         const char *q = next;
@@ -118,7 +123,7 @@ static void print_license_list(const char *start, const char *end, int width) {
     int num = atoi(num_start);
     fprintf(stdout, " %2d. ", num);
     static char buf[1024];
-    size_t n = (size_t)(item_end - text_start);
+    size_t      n = (size_t)(item_end - text_start);
     if (n >= sizeof(buf)) n = sizeof(buf) - 1;
     memcpy(buf, text_start, n);
     buf[n] = '\0';
@@ -140,8 +145,7 @@ static void cli_print_license(FILE *out, const char *text, int width) {
       print_license_paragraph(p, p + strlen(p), width);
       break;
     }
-    if (q > p)
-      print_license_paragraph(p, q, width);
+    if (q > p) print_license_paragraph(p, q, width);
     q += 5;
     if (strncmp(q, "paragraph -->", 13) == 0) {
       q += 13;
@@ -156,8 +160,7 @@ static void cli_print_license(FILE *out, const char *text, int width) {
       q += 14;
       skip_whitespace(&q);
       const char *r = strstr(q, "<!-- list:end -->");
-      if (r)
-        print_license_list(q, r, width);
+      if (r) print_license_list(q, r, width);
       p = r ? r + 17 : q + strlen(q);
       continue;
     }
@@ -166,37 +169,26 @@ static void cli_print_license(FILE *out, const char *text, int width) {
 }
 
 int main(int argc, const char **argv) {
-  const char *loglevel = "info";
+  const char *loglevel     = "info";
   const char *logfile_path = NULL;
-  const char *config_path = NULL;
-  static int license_flag = 0;
+  const char *config_path  = NULL;
+  static int  license_flag = 0;
 
-  cli_register_command(
-    "list-commands",
-    "Displays known commands and their descriptions",
-    cli_cmd_list_commands
-  );
+  cli_register_command("list-commands", "Displays known commands and their descriptions", cli_cmd_list_commands);
 
-  cli_register_command(
-    "daemon",
-    "Run the udphole daemon",
-    cli_cmd_daemon
-  );
+  cli_register_command("daemon", "Run the udphole daemon", cli_cmd_daemon);
 
-  cli_register_command(
-    "cluster",
-    "Run the udphole cluster",
-    cli_cmd_cluster
-  );
+  cli_register_command("cluster", "Run the udphole cluster", cli_cmd_cluster);
 
-  struct argparse argparse;
+  struct argparse        argparse;
   struct argparse_option options[] = {
-    OPT_HELP(),
-    OPT_STRING('f', "config", &config_path, "config file path (default: auto-detect)", NULL, 0, 0),
-    OPT_STRING('v', "verbosity", &loglevel, "log verbosity: fatal,error,warn,info,debug,trace (default: info)", NULL, 0, 0),
-    OPT_STRING(0, "log", &logfile_path, "also write log to file (SIGHUP reopens for logrotate)", NULL, 0, 0),
-    OPT_BOOLEAN(0, "license", &license_flag, "print license and exit", NULL, 0, 0),
-    OPT_END(),
+      OPT_HELP(),
+      OPT_STRING('f', "config", &config_path, "config file path (default: auto-detect)", NULL, 0, 0),
+      OPT_STRING('v', "verbosity", &loglevel, "log verbosity: fatal,error,warn,info,debug,trace (default: info)", NULL,
+                 0, 0),
+      OPT_STRING(0, "log", &logfile_path, "also write log to file (SIGHUP reopens for logrotate)", NULL, 0, 0),
+      OPT_BOOLEAN(0, "license", &license_flag, "print license and exit", NULL, 0, 0),
+      OPT_END(),
   };
   argparse_init(&argparse, options, usages, ARGPARSE_STOP_AT_NON_OPTION);
   argc = argparse_parse(&argparse, argc, argv);
@@ -211,8 +203,7 @@ int main(int argc, const char **argv) {
     return 1;
   }
 
-  if (!config_path || !config_path[0])
-    config_path = cli_resolve_default_config();
+  if (!config_path || !config_path[0]) config_path = cli_resolve_default_config();
   config_set_path(config_path);
   config_init();
 
@@ -238,8 +229,8 @@ int main(int argc, const char **argv) {
   log_set_level(level);
   setvbuf(stderr, NULL, _IOLBF, 0);
 
-  log_file = NULL;
-  log_path = NULL;
+  log_file        = NULL;
+  log_path        = NULL;
   sighup_received = 0;
 
   if (logfile_path && logfile_path[0]) {

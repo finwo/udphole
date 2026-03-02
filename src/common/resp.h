@@ -3,19 +3,22 @@
 
 #include <stddef.h>
 
-#define RESPT_SIMPLE  0
-#define RESPT_ERROR   1
-#define RESPT_BULK    2
-#define RESPT_INT      3
-#define RESPT_ARRAY    4
+#define RESPT_SIMPLE 0
+#define RESPT_ERROR  1
+#define RESPT_BULK   2
+#define RESPT_INT    3
+#define RESPT_ARRAY  4
 
 typedef struct resp_object resp_object;
 struct resp_object {
   int type;
   union {
-    char *s;
+    char     *s;
     long long i;
-    struct { resp_object *elem; size_t n; } arr;
+    struct {
+      resp_object *elem;
+      size_t       n;
+    } arr;
   } u;
 };
 
@@ -50,7 +53,8 @@ resp_object *resp_array_init(void);
 /* Returns new array object: caller owns the result, must call resp_free() */
 
 resp_object *resp_simple_init(const char *value);
-/* Returns new simple string object: caller owns the result, must call resp_free() */
+/* Returns new simple string object: caller owns the result, must call
+ * resp_free() */
 
 resp_object *resp_error_init(const char *value);
 /* Returns new error object: caller owns the result, must call resp_free() */

@@ -3,12 +3,12 @@
 
 #include <stdint.h>
 
-#include "common/scheduler.h"
 #include "common/resp.h"
+#include "common/scheduler.h"
 
 typedef struct {
   int64_t last_cleanup;
-  int initialized;
+  int     initialized;
 } session_manager_udata_t;
 
 int session_manager_pt(int64_t timestamp, struct pt_task *task);

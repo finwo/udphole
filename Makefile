@@ -131,3 +131,7 @@ clean:
 	rm -rf $(BIN) $(BIN).1
 	rm -rf $(OBJ)
 	rm -rf doc/cli_doc.md doc/cli_doc.man doc/license.man
+
+.PHONY: format
+format:
+	$(FIND) src/ -type f \( -name '*.c' -o -name '*.h' \) -exec clang-format -i {} +

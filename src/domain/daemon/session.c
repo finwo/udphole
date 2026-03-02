@@ -1,43 +1,44 @@
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
-#include <unistd.h>
+#include "session.h"
+
+#include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <time.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/stat.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <time.h>
+#include <unistd.h>
 
-#include "rxi/log.h"
-#include "common/scheduler.h"
-#include "domain/config.h"
-#include "common/socket_util.h"
 #include "common/resp.h"
+#include "common/scheduler.h"
+#include "common/socket_util.h"
+#include "domain/config.h"
+#include "rxi/log.h"
 #include "tidwall/hashmap.h"
-#include "session.h"
 
 static resp_object *get_udphole_cfg(void) {
   return domain_cfg ? resp_map_get(domain_cfg, "udphole") : NULL;
 }
 
-#define SESSION_HASH_SIZE 256
-#define BUFFER_SIZE 4096
+#define SESSION_HASH_SIZE   256
+#define BUFFER_SIZE         4096
 #define DEFAULT_IDLE_EXPIRY 60
 
 typedef struct socket {
-  char *socket_id;
-  int *fds;
-  int local_port;
-  int mode;
+  char                   *socket_id;
+  int                    *fds;
+  int                     local_port;
+  int                     mode;
   struct sockaddr_storage remote_addr;
-  socklen_t remote_addrlen;
-  int learned_valid;
+  socklen_t               remote_addrlen;
+  int                     learned_valid;
   struct sockaddr_storage learned_addr;
-  socklen_t learned_addrlen;
+  socklen_t               learned_addrlen;
 } socket_t;
 
 typedef struct forward {
@@ -46,22 +47,22 @@ typedef struct forward {
 } forward_t;
 
 typedef struct session {
-  char *session_id;
-  time_t idle_expiry;
-  time_t created;
-  time_t last_activity;
-  socket_t **sockets;
-  size_t sockets_count;
-  forward_t *forwards;
-  size_t forwards_count;
-  int marked_for_deletion;
-  int *ready_fds;
-  int *all_fds;
+  char           *session_id;
+  time_t          idle_expiry;
+  time_t          created;
+  time_t          last_activity;
+  socket_t      **sockets;
+  size_t          sockets_count;
+  forward_t      *forwards;
+  size_t          forwards_count;
+  int             marked_for_deletion;
+  int            *ready_fds;
+  int            *all_fds;
   struct pt_task *task;
 } session_t;
 
-static session_t **sessions = NULL;
-static size_t sessions_count = 0;
+static session_t **sessions       = NULL;
+static size_t      sessions_count = 0;
 
 static session_t *find_session(const char *session_id) {
   for (size_t i = 0; i < sessions_count; i++) {
@@ -86,11 +87,11 @@ static int alloc_port(void) {
   resp_object *udphole = get_udphole_cfg();
   if (!udphole) return 0;
   const char *ports_str = resp_map_get_string(udphole, "ports");
-  int port_low = 7000, port_high = 7999, port_cur = 7000;
+  int         port_low = 7000, port_high = 7999, port_cur = 7000;
   if (ports_str) sscanf(ports_str, "%d-%d", &port_low, &port_high);
   const char *port_cur_str = resp_map_get_string(udphole, "_port_cur");
   if (port_cur_str) port_cur = atoi(port_cur_str);
-  
+
   for (int i = 0; i < port_high - port_low; i++) {
     int port = port_cur + i;
     if (port > port_high) port = port_low;
@@ -99,9 +100,9 @@ static int alloc_port(void) {
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
+    addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
+    addr.sin_port        = htons(port);
 
     int udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fd < 0) continue;
@@ -120,16 +121,16 @@ static int parse_ip_addr(const char *ip_str, int port, struct sockaddr_storage *
   struct sockaddr_in *addr4 = (struct sockaddr_in *)addr;
   if (inet_pton(AF_INET, ip_str, &addr4->sin_addr) == 1) {
     addr4->sin_family = AF_INET;
-    addr4->sin_port = htons(port);
-    *addrlen = sizeof(*addr4);
+    addr4->sin_port   = htons(port);
+    *addrlen          = sizeof(*addr4);
     return 0;
   }
 
   struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)addr;
   if (inet_pton(AF_INET6, ip_str, &addr6->sin6_addr) == 1) {
     addr6->sin6_family = AF_INET6;
-    addr6->sin6_port = htons(port);
-    *addrlen = sizeof(*addr6);
+    addr6->sin6_port   = htons(port);
+    *addrlen           = sizeof(*addr6);
     return 0;
   }
 
@@ -192,12 +193,12 @@ static session_t *create_session(const char *session_id, int idle_expiry) {
   session_t *s = calloc(1, sizeof(*s));
   if (!s) return NULL;
 
-  s->session_id = strdup(session_id);
-  s->created = time(NULL);
+  s->session_id    = strdup(session_id);
+  s->created       = time(NULL);
   s->last_activity = s->created;
-  s->idle_expiry = idle_expiry > 0 ? idle_expiry : DEFAULT_IDLE_EXPIRY;
+  s->idle_expiry   = idle_expiry > 0 ? idle_expiry : DEFAULT_IDLE_EXPIRY;
 
-  sessions = realloc(sessions, sizeof(session_t *) * (sessions_count + 1));
+  sessions                   = realloc(sessions, sizeof(session_t *) * (sessions_count + 1));
   sessions[sessions_count++] = s;
 
   return s;
@@ -211,8 +212,8 @@ static void cleanup_expired_sessions(void) {
     session_t *s = sessions[i];
     if (!s) continue;
     if (now - s->last_activity > s->idle_expiry) {
-      log_debug("udphole: session %s expired (idle %ld > expiry %ld)",
-                s->session_id, (long)(now - s->last_activity), (long)s->idle_expiry);
+      log_debug("udphole: session %s expired (idle %ld > expiry %ld)", s->session_id, (long)(now - s->last_activity),
+                (long)s->idle_expiry);
       destroy_session(s);
     }
   }
@@ -220,8 +221,7 @@ static void cleanup_expired_sessions(void) {
 
 static int add_forward(session_t *s, const char *src_id, const char *dst_id) {
   for (size_t i = 0; i < s->forwards_count; i++) {
-    if (strcmp(s->forwards[i].src_socket_id, src_id) == 0 &&
-        strcmp(s->forwards[i].dst_socket_id, dst_id) == 0) {
+    if (strcmp(s->forwards[i].src_socket_id, src_id) == 0 && strcmp(s->forwards[i].dst_socket_id, dst_id) == 0) {
       return 0;
     }
   }
@@ -239,8 +239,7 @@ static int add_forward(session_t *s, const char *src_id, const char *dst_id) {
 
 static int remove_forward(session_t *s, const char *src_id, const char *dst_id) {
   for (size_t i = 0; i < s->forwards_count; i++) {
-    if (strcmp(s->forwards[i].src_socket_id, src_id) == 0 &&
-        strcmp(s->forwards[i].dst_socket_id, dst_id) == 0) {
+    if (strcmp(s->forwards[i].src_socket_id, src_id) == 0 && strcmp(s->forwards[i].dst_socket_id, dst_id) == 0) {
       free(s->forwards[i].src_socket_id);
       free(s->forwards[i].dst_socket_id);
       for (size_t j = i; j < s->forwards_count - 1; j++) {
@@ -278,22 +277,20 @@ static socket_t *create_listen_socket(session_t *sess, const char *socket_id) {
     return NULL;
   }
 
-  sock->socket_id = strdup(socket_id);
-  sock->fds = fds;
-  sock->local_port = port;
-  sock->mode = 0;
+  sock->socket_id     = strdup(socket_id);
+  sock->fds           = fds;
+  sock->local_port    = port;
+  sock->mode          = 0;
   sock->learned_valid = 0;
 
-  sess->sockets = realloc(sess->sockets, sizeof(socket_t *) * (sess->sockets_count + 1));
+  sess->sockets                        = realloc(sess->sockets, sizeof(socket_t *) * (sess->sockets_count + 1));
   sess->sockets[sess->sockets_count++] = sock;
 
-  log_debug("udphole: created listen socket %s in session %s on port %d",
-            socket_id, sess->session_id, port);
+  log_debug("udphole: created listen socket %s in session %s on port %d", socket_id, sess->session_id, port);
   return sock;
 }
 
-static socket_t *create_connect_socket(session_t *sess, const char *socket_id,
-                                       const char *ip, int port) {
+static socket_t *create_connect_socket(session_t *sess, const char *socket_id, const char *ip, int port) {
   socket_t *existing = find_socket(sess, socket_id);
   if (existing) return existing;
 
@@ -313,7 +310,7 @@ static socket_t *create_connect_socket(session_t *sess, const char *socket_id,
   }
 
   struct sockaddr_storage remote_addr;
-  socklen_t remote_addrlen;
+  socklen_t               remote_addrlen;
   if (parse_ip_addr(ip, port, &remote_addr, &remote_addrlen) != 0) {
     log_error("udphole: invalid remote address %s:%d", ip, port);
     free(fds);
@@ -326,19 +323,19 @@ static socket_t *create_connect_socket(session_t *sess, const char *socket_id,
     return NULL;
   }
 
-  sock->socket_id = strdup(socket_id);
-  sock->fds = fds;
-  sock->local_port = local_port;
-  sock->mode = 1;
-  sock->remote_addr = remote_addr;
+  sock->socket_id      = strdup(socket_id);
+  sock->fds            = fds;
+  sock->local_port     = local_port;
+  sock->mode           = 1;
+  sock->remote_addr    = remote_addr;
   sock->remote_addrlen = remote_addrlen;
-  sock->learned_valid = 0;
+  sock->learned_valid  = 0;
 
-  sess->sockets = realloc(sess->sockets, sizeof(socket_t *) * (sess->sockets_count + 1));
+  sess->sockets                        = realloc(sess->sockets, sizeof(socket_t *) * (sess->sockets_count + 1));
   sess->sockets[sess->sockets_count++] = sock;
 
-  log_debug("udphole: created connect socket %s in session %s on port %d -> %s:%d",
-            socket_id, sess->session_id, local_port, ip, port);
+  log_debug("udphole: created connect socket %s in session %s on port %d -> %s:%d", socket_id, sess->session_id,
+            local_port, ip, port);
   return sock;
 }
 
@@ -354,7 +351,7 @@ static int destroy_socket(session_t *sess, const char *socket_id) {
   }
   free_socket(sock);
 
-  for (size_t i = 0; i < sess->forwards_count; ) {
+  for (size_t i = 0; i < sess->forwards_count;) {
     if (strcmp(sess->forwards[i].src_socket_id, socket_id) == 0 ||
         strcmp(sess->forwards[i].dst_socket_id, socket_id) == 0) {
       free(sess->forwards[i].src_socket_id);
@@ -420,21 +417,19 @@ int session_pt(int64_t timestamp, struct pt_task *task) {
     return SCHED_RUNNING;
   }
 
-  char buffer[BUFFER_SIZE];
+  char      buffer[BUFFER_SIZE];
   socket_t *src_sock = find_socket_by_fd(s, ready_fd);
   if (!src_sock) {
     return SCHED_RUNNING;
   }
 
   struct sockaddr_storage from_addr;
-  socklen_t from_len = sizeof(from_addr);
-  ssize_t n = recvfrom(ready_fd, buffer, sizeof(buffer) - 1, 0,
-                       (struct sockaddr *)&from_addr, &from_len);
+  socklen_t               from_len = sizeof(from_addr);
+  ssize_t n = recvfrom(ready_fd, buffer, sizeof(buffer) - 1, 0, (struct sockaddr *)&from_addr, &from_len);
 
   if (n <= 0) {
     if (errno != EAGAIN && errno != EWOULDBLOCK) {
-      log_warn("udphole: recvfrom error on socket %s: %s",
-               src_sock->socket_id, strerror(errno));
+      log_warn("udphole: recvfrom error on socket %s: %s", src_sock->socket_id, strerror(errno));
     }
     return SCHED_RUNNING;
   }
@@ -442,9 +437,9 @@ int session_pt(int64_t timestamp, struct pt_task *task) {
   s->last_activity = time(NULL);
 
   if (src_sock->mode == 0 && !src_sock->learned_valid) {
-    src_sock->learned_addr = from_addr;
+    src_sock->learned_addr    = from_addr;
     src_sock->learned_addrlen = from_len;
-    src_sock->learned_valid = 1;
+    src_sock->learned_valid   = 1;
     log_debug("udphole: socket %s learned remote address", src_sock->socket_id);
   }
 
@@ -456,23 +451,22 @@ int session_pt(int64_t timestamp, struct pt_task *task) {
     socket_t *dst_sock = find_socket(s, s->forwards[i].dst_socket_id);
     if (!dst_sock || !dst_sock->fds || dst_sock->fds[0] == 0) continue;
 
-    struct sockaddr *dest_addr = NULL;
-    socklen_t dest_addrlen = 0;
+    struct sockaddr *dest_addr    = NULL;
+    socklen_t        dest_addrlen = 0;
 
     if (dst_sock->mode == 1) {
-      dest_addr = (struct sockaddr *)&dst_sock->remote_addr;
+      dest_addr    = (struct sockaddr *)&dst_sock->remote_addr;
       dest_addrlen = dst_sock->remote_addrlen;
     } else if (dst_sock->learned_valid) {
-      dest_addr = (struct sockaddr *)&dst_sock->learned_addr;
+      dest_addr    = (struct sockaddr *)&dst_sock->learned_addr;
       dest_addrlen = dst_sock->learned_addrlen;
     }
 
     if (dest_addr && dest_addrlen > 0) {
-      int dst_fd = dst_sock->fds[1];
-      ssize_t sent = sendto(dst_fd, buffer, n, 0, dest_addr, dest_addrlen);
+      int     dst_fd = dst_sock->fds[1];
+      ssize_t sent   = sendto(dst_fd, buffer, n, 0, dest_addr, dest_addrlen);
       if (sent < 0) {
-        log_warn("udphole: forward failed %s -> %s: %s",
-                 src_sock->socket_id, dst_sock->socket_id, strerror(errno));
+        log_warn("udphole: forward failed %s -> %s: %s", src_sock->socket_id, dst_sock->socket_id, strerror(errno));
       }
     }
   }
@@ -654,7 +648,7 @@ resp_object *domain_socket_create_listen(const char *cmd, resp_object *args) {
   }
 
   const char *session_id = NULL;
-  const char *socket_id = NULL;
+  const char *socket_id  = NULL;
 
   if (args->u.arr.elem[1].type == RESPT_BULK) {
     session_id = args->u.arr.elem[1].u.s;
@@ -684,8 +678,8 @@ resp_object *domain_socket_create_listen(const char *cmd, resp_object *args) {
 
   resp_object *res = resp_array_init();
   resp_array_append_int(res, sock->local_port);
-  resp_object *udphole = get_udphole_cfg();
-  const char *advertise = udphole ? resp_map_get_string(udphole, "advertise") : NULL;
+  resp_object *udphole   = get_udphole_cfg();
+  const char  *advertise = udphole ? resp_map_get_string(udphole, "advertise") : NULL;
   resp_array_append_bulk(res, advertise ? advertise : "");
   return res;
 }
@@ -699,9 +693,9 @@ resp_object *domain_socket_create_connect(const char *cmd, resp_object *args) {
   }
 
   const char *session_id = NULL;
-  const char *socket_id = NULL;
-  const char *ip = NULL;
-  const char *port_str = NULL;
+  const char *socket_id  = NULL;
+  const char *ip         = NULL;
+  const char *port_str   = NULL;
 
   if (args->u.arr.elem[1].type == RESPT_BULK) {
     session_id = args->u.arr.elem[1].u.s;
@@ -739,8 +733,8 @@ resp_object *domain_socket_create_connect(const char *cmd, resp_object *args) {
 
   resp_object *res = resp_array_init();
   resp_array_append_int(res, sock->local_port);
-  resp_object *udphole = get_udphole_cfg();
-  const char *advertise = udphole ? resp_map_get_string(udphole, "advertise") : NULL;
+  resp_object *udphole   = get_udphole_cfg();
+  const char  *advertise = udphole ? resp_map_get_string(udphole, "advertise") : NULL;
   resp_array_append_bulk(res, advertise ? advertise : "");
   return res;
 }
@@ -754,7 +748,7 @@ resp_object *domain_socket_destroy(const char *cmd, resp_object *args) {
   }
 
   const char *session_id = NULL;
-  const char *socket_id = NULL;
+  const char *socket_id  = NULL;
 
   if (args->u.arr.elem[1].type == RESPT_BULK) {
     session_id = args->u.arr.elem[1].u.s;
@@ -826,7 +820,7 @@ resp_object *domain_forward_create(const char *cmd, resp_object *args) {
     return err;
   }
 
-  const char *session_id = NULL;
+  const char *session_id    = NULL;
   const char *src_socket_id = NULL;
   const char *dst_socket_id = NULL;
 
@@ -886,7 +880,7 @@ resp_object *domain_forward_destroy(const char *cmd, resp_object *args) {
     return err;
   }
 
-  const char *session_id = NULL;
+  const char *session_id    = NULL;
   const char *src_socket_id = NULL;
   const char *dst_socket_id = NULL;
 
@@ -934,7 +928,7 @@ resp_object *domain_system_load(const char *cmd, resp_object *args) {
   }
 
   resp_object *res = resp_array_init();
-  char buf[64];
+  char         buf[64];
 
   resp_array_append_bulk(res, "1min");
   snprintf(buf, sizeof(buf), "%.2f", loadavg[0]);
@@ -965,7 +959,7 @@ resp_object *domain_session_count(const char *cmd, resp_object *args) {
   resp_object *res = malloc(sizeof(resp_object));
   if (!res) return NULL;
   res->type = RESPT_INT;
-  res->u.i = (long long)count;
+  res->u.i  = (long long)count;
   return res;
 }
 
@@ -979,7 +973,7 @@ int session_manager_pt(int64_t timestamp, struct pt_task *task) {
 
   if (!udata->initialized) {
     const char *ports_str = resp_map_get_string(udphole, "ports");
-    int port_low = 7000, port_high = 7999;
+    int         port_low = 7000, port_high = 7999;
     if (ports_str) sscanf(ports_str, "%d-%d", &port_low, &port_high);
     log_info("udphole: manager started with port range %d-%d", port_low, port_high);
     udata->initialized = 1;

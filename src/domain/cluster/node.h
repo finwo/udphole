@@ -2,6 +2,7 @@
 #define UDPHOLE_CLUSTER_NODE_H
 
 #include <stdint.h>
+
 #include "common/resp.h"
 #include "common/scheduler.h"
 
@@ -9,24 +10,25 @@ typedef struct cluster_node {
   char *name;
   char *address;
   char *host;
-  int port;
+  int   port;
   char *unix_path;
   char *username;
   char *password;
-  int weight;
+  int   weight;
 
-  int fd;
-  int available;
+  int     fd;
+  int     available;
   int64_t last_ping;
   int64_t last_check;
 } cluster_node_t;
 
 typedef struct {
   cluster_node_t **nodes;
-  size_t nodes_count;
+  size_t           nodes_count;
 } cluster_nodes_t;
 
-int cluster_node_init(cluster_node_t *node, const char *name, const char *address, const char *username, const char *password);
+int cluster_node_init(cluster_node_t *node, const char *name, const char *address, const char *username,
+                      const char *password);
 
 void cluster_node_free(cluster_node_t *node);
 

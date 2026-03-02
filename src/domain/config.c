@@ -1,8 +1,8 @@
+#include "domain/config.h"
+
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-
-#include "domain/config.h"
 
 resp_object *domain_cfg = NULL;
 
