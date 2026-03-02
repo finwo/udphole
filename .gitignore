@@ -3,3 +3,5 @@
 *.log
 /udphole
 /config.ini
+/.cache/
+/compile_commands.json

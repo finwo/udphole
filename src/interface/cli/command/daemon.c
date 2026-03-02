@@ -11,7 +11,7 @@
 #include "infrastructure/config.h"
 #include "common/resp.h"
 #include "../common.h"
-#include "domain/scheduler.h"
+#include "common/scheduler.h"
 #include "domain/config.h"
 #include "daemon.h"
 #include "interface/api/server.h"
@@ -109,10 +109,10 @@ int cli_cmd_daemon(int argc, const char **argv) {
 
   session_manager_udata_t *session_udata = calloc(1, sizeof(session_manager_udata_t));
 
-  domain_schedmod_pt_create(api_server_pt, NULL);
-  domain_schedmod_pt_create(session_manager_pt, session_udata);
+  sched_create(api_server_pt, NULL);
+  sched_create(session_manager_pt, session_udata);
 
   log_info("udphole: daemon started");
 
-  return domain_schedmod_main();
+  return sched_main();
 }
