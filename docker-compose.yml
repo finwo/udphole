@@ -1,0 +1,24 @@
+services:
+  udphole:
+    build:
+      context: .
+      platforms:
+        - linux/amd64
+        - linux/arm64/v8
+        - linux/riscv64
+    ports:
+      - "${API_PORT:-6379}:${API_PORT:-6379}"
+      - "7000-7999:7000-7999/udp"
+    volumes:
+      - ./udphole.conf:/etc/udphole.conf:ro
+    environment:
+      - API_PORT=6379
+      - UDP_PORTS=7000-7999
+      - LOG_LEVEL=info
+      - API_ADMIN_USER=admin
+      - API_ADMIN_PASS=supers3cret
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "6379"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
