@@ -2,6 +2,7 @@
 #define UDPHOLE_DOMAIN_CONFIG_H
 
 #include <stdint.h>
+
 #include "common/resp.h"
 
 extern resp_object *domain_cfg;

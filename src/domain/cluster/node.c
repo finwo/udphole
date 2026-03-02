@@ -1,29 +1,30 @@
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-
-#include "rxi/log.h"
-#include "common/resp.h"
-#include "common/socket_util.h"
 #include "node.h"
 
-#define QUERY_TIMEOUT_MS 500
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+
+#include "common/resp.h"
+#include "common/socket_util.h"
+#include "rxi/log.h"
+
+#define QUERY_TIMEOUT_MS        500
 #define HEALTHCHECK_INTERVAL_MS 5000
 
 static int parse_address(const char *address, char **host, int *port, char **unix_path) {
   if (!address) return -1;
 
   if (strncmp(address, "tcp://", 6) == 0) {
-    const char *hp = address + 6;
+    const char *hp    = address + 6;
     const char *colon = strchr(hp, ':');
     if (!colon) {
       log_error("cluster: invalid tcp address '%s' (missing port)", address);
@@ -31,7 +32,7 @@ static int parse_address(const char *address, char **host, int *port, char **uni
     }
 
     size_t host_len = colon - hp;
-    *host = malloc(host_len + 1);
+    *host           = malloc(host_len + 1);
     if (!*host) return -1;
     memcpy(*host, hp, host_len);
     (*host)[host_len] = '\0';
@@ -48,8 +49,8 @@ static int parse_address(const char *address, char **host, int *port, char **uni
 
   } else if (strncmp(address, "unix://", 7) == 0) {
     *unix_path = strdup(address + 7);
-    *host = NULL;
-    *port = 0;
+    *host      = NULL;
+    *port      = 0;
     return 0;
   }
 
@@ -57,11 +58,12 @@ static int parse_address(const char *address, char **host, int *port, char **uni
   return -1;
 }
 
-int cluster_node_init(cluster_node_t *node, const char *name, const char *address, const char *username, const char *password) {
+int cluster_node_init(cluster_node_t *node, const char *name, const char *address, const char *username,
+                      const char *password) {
   memset(node, 0, sizeof(*node));
 
-  node->name = strdup(name);
-  node->address = address ? strdup(address) : NULL;
+  node->name     = strdup(name);
+  node->address  = address ? strdup(address) : NULL;
   node->username = username ? strdup(username) : NULL;
   node->password = password ? strdup(password) : NULL;
 
@@ -74,11 +76,11 @@ int cluster_node_init(cluster_node_t *node, const char *name, const char *addres
     return -1;
   }
 
-  node->fd = -1;
-  node->available = 0;
-  node->last_ping = 0;
+  node->fd         = -1;
+  node->available  = 0;
+  node->last_ping  = 0;
   node->last_check = 0;
-  node->weight = 1;
+  node->weight     = 1;
 
   return 0;
 }
@@ -96,10 +98,10 @@ void cluster_node_free(cluster_node_t *node) {
 
 static int connect_tcp(const char *host, int port) {
   struct addrinfo hints, *res, *res0;
-  int sockfd, error;
+  int             sockfd, error;
 
   memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_UNSPEC;
+  hints.ai_family   = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_protocol = 0;
 
@@ -135,7 +137,7 @@ static int connect_tcp(const char *host, int port) {
 
 static int connect_unix(const char *path) {
   struct sockaddr_un addr;
-  int sockfd;
+  int                sockfd;
 
   if (strlen(path) >= sizeof(addr.sun_path)) {
     log_error("cluster: unix socket path too long: %s", path);
@@ -178,9 +180,9 @@ int cluster_node_connect(cluster_node_t *node) {
   log_info("cluster: connected to node '%s' at %s", node->name, node->address);
 
   if (node->username && node->password) {
-    char *cmd_str = NULL;
-    size_t cmd_len = 0;
-    resp_object *cmd = resp_array_init();
+    char        *cmd_str = NULL;
+    size_t       cmd_len = 0;
+    resp_object *cmd     = resp_array_init();
     resp_array_append_bulk(cmd, "auth");
     resp_array_append_bulk(cmd, node->username);
     resp_array_append_bulk(cmd, node->password);
@@ -215,8 +217,8 @@ void cluster_node_disconnect(cluster_node_t *node) {
 }
 
 static int send_resp_command(int fd, const char *cmd) {
-  size_t cmd_len = strlen(cmd);
-  ssize_t n = send(fd, cmd, cmd_len, 0);
+  size_t  cmd_len = strlen(cmd);
+  ssize_t n       = send(fd, cmd, cmd_len, 0);
   return (n == (ssize_t)cmd_len) ? 0 : -1;
 }
 
@@ -263,9 +265,9 @@ int cluster_node_healthcheck_pt(int64_t timestamp, struct pt_task *task) {
     }
   }
 
-  char *cmd_str = NULL;
-  size_t cmd_len = 0;
-  resp_object *cmd = resp_array_init();
+  char        *cmd_str = NULL;
+  size_t       cmd_len = 0;
+  resp_object *cmd     = resp_array_init();
   resp_array_append_bulk(cmd, "ping");
   resp_serialize(cmd, &cmd_str, &cmd_len);
   resp_free(cmd);
@@ -319,10 +321,9 @@ void cluster_nodes_free(cluster_nodes_t *cnodes) {
 }
 
 int cluster_nodes_add(cluster_nodes_t *cnodes, cluster_node_t *node) {
-  cluster_node_t **new_nodes = realloc(cnodes->nodes,
-    sizeof(cluster_node_t *) * (cnodes->nodes_count + 1));
+  cluster_node_t **new_nodes = realloc(cnodes->nodes, sizeof(cluster_node_t *) * (cnodes->nodes_count + 1));
   if (!new_nodes) return -1;
-  cnodes->nodes = new_nodes;
+  cnodes->nodes                        = new_nodes;
   cnodes->nodes[cnodes->nodes_count++] = node;
   return 0;
 }

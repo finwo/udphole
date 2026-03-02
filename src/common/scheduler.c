@@ -1,27 +1,27 @@
+#include "common/scheduler.h"
+
 #include <stdlib.h>
 #include <sys/select.h>
 #include <sys/time.h>
 
-#include "common/scheduler.h"
-
 #ifndef NULL
-#define NULL ((void*)0)
+#define NULL ((void *)0)
 #endif
 
-pt_task_t *pt_first = NULL;
-fd_set g_select_result;
+pt_task_t    *pt_first = NULL;
+fd_set        g_select_result;
 static fd_set g_want_fds;
 
 int sched_create(pt_task_fn fn, void *udata) {
   if (!fn) return 1;
 
   pt_task_t *node = calloc(1, sizeof(pt_task_t));
-  node->next           = pt_first;
-  node->func           = fn;
-  node->udata          = udata;
-  node->is_active  = 1;
-  pt_first = node;
-  
+  node->next      = pt_first;
+  node->func      = fn;
+  node->udata     = udata;
+  node->is_active = 1;
+  pt_first        = node;
+
   return 0;
 }
 
@@ -73,9 +73,9 @@ int sched_main(void) {
   if (!pt_first) return 0;
 
   struct timeval tv;
-  int maxfd;
+  int            maxfd;
 
-  for(;;) {
+  for (;;) {
     maxfd = -1;
     for (int fd = 0; fd < FD_SETSIZE; fd++) {
       if (FD_ISSET(fd, &g_want_fds)) {
@@ -84,11 +84,11 @@ int sched_main(void) {
     }
 
     if (maxfd < 0) {
-      tv.tv_sec = 0;
+      tv.tv_sec  = 0;
       tv.tv_usec = 100000;
       select(0, NULL, NULL, NULL, &tv);
     } else {
-      tv.tv_sec = 0;
+      tv.tv_sec  = 0;
       tv.tv_usec = 100000;
       select(maxfd + 1, &g_want_fds, NULL, NULL, &tv);
       g_select_result = g_want_fds;

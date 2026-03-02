@@ -6,67 +6,68 @@
  * Runs as a protothread in the main select() loop.
  */
 
-#include <stdlib.h>
-#include <string.h>
-#include <stdio.h>
+#include "interface/api/server.h"
+
+#include <arpa/inet.h>
 #include <ctype.h>
-#include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
+#include <unistd.h>
 
-#include "rxi/log.h"
-#include "tidwall/hashmap.h"
+#include "common/resp.h"
 #include "common/scheduler.h"
 #include "common/socket_util.h"
-#include "infrastructure/config.h"
 #include "domain/config.h"
-#include "interface/api/server.h"
-#include "common/resp.h"
+#include "infrastructure/config.h"
+#include "rxi/log.h"
+#include "tidwall/hashmap.h"
 
 int api_client_pt(int64_t timestamp, struct pt_task *task);
 
-#define API_MAX_CLIENTS   8
-#define READ_BUF_SIZE     4096
-#define WRITE_BUF_INIT    4096
-#define MAX_ARGS          32
+#define API_MAX_CLIENTS 8
+#define READ_BUF_SIZE   4096
+#define WRITE_BUF_INIT  4096
+#define MAX_ARGS        32
 
 struct api_client_state {
-  int       fd;
-  int      *fds;
-  int      *ready_fds;
-  int       ready_fd;
-  char     *username;
-  char      rbuf[READ_BUF_SIZE];
-  size_t    rlen;
-  char     *wbuf;
-  size_t    wlen;
-  size_t    wcap;
+  int    fd;
+  int   *fds;
+  int   *ready_fds;
+  int    ready_fd;
+  char  *username;
+  char   rbuf[READ_BUF_SIZE];
+  size_t rlen;
+  char  *wbuf;
+  size_t wlen;
+  size_t wcap;
 };
 
 typedef struct api_client_state api_client_t;
 
 typedef struct {
-  const char  *name;
-  char       (*func)(api_client_t *c, char **args, int nargs);
+  const char *name;
+  char (*func)(api_client_t *c, char **args, int nargs);
 } api_cmd_entry;
 
 typedef struct {
-  const char  *name;
+  const char   *name;
   domain_cmd_fn func;
 } domain_cmd_entry;
 
-static char     *current_listen = NULL;
-static struct hashmap  *cmd_map = NULL;
-static struct hashmap  *domain_cmd_map = NULL;
+static char           *current_listen = NULL;
+static struct hashmap *cmd_map        = NULL;
+static struct hashmap *domain_cmd_map = NULL;
 
 typedef struct {
-  int      *server_fds;
-  int      *ready_fds;
+  int *server_fds;
+  int *ready_fds;
 } api_server_udata_t;
 
 bool api_write_raw(api_client_t *c, const void *data, size_t len) {
@@ -118,7 +119,7 @@ bool api_write_array(api_client_t *c, size_t nitems) {
 bool api_write_bulk_cstr(api_client_t *c, const char *s) {
   if (!s) return api_write_nil(c);
   size_t len = strlen(s);
-  char prefix[32];
+  char   prefix[32];
   snprintf(prefix, sizeof(prefix), "$%zu\r\n", len);
   if (!api_write_cstr(c, prefix)) return false;
   if (!api_write_raw(c, s, len)) return false;
@@ -139,7 +140,7 @@ static void client_close(api_client_t *c) {
   free(c->wbuf);
   c->wbuf = NULL;
   c->wlen = c->wcap = 0;
-  c->rlen = 0;
+  c->rlen           = 0;
   free(c->username);
   c->username = NULL;
 }
@@ -148,8 +149,7 @@ static void client_flush(api_client_t *c) {
   if (c->fd < 0 || c->wlen == 0) return;
   ssize_t n = send(c->fd, c->wbuf, c->wlen, 0);
   if (n > 0) {
-    if ((size_t)n < c->wlen)
-      memmove(c->wbuf, c->wbuf + n, c->wlen - (size_t)n);
+    if ((size_t)n < c->wlen) memmove(c->wbuf, c->wbuf + n, c->wlen - (size_t)n);
     c->wlen -= (size_t)n;
   } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
     client_close(c);
@@ -158,8 +158,7 @@ static void client_flush(api_client_t *c) {
 
 static bool permit_matches(const char *pattern, const char *cmd) {
   size_t plen = strlen(pattern);
-  if (plen == 1 && pattern[0] == '*')
-    return true;
+  if (plen == 1 && pattern[0] == '*') return true;
   if (plen >= 2 && pattern[plen - 1] == '*') {
     return strncasecmp(pattern, cmd, plen - 1) == 0;
   }
@@ -167,7 +166,7 @@ static bool permit_matches(const char *pattern, const char *cmd) {
 }
 
 static bool user_has_permit(api_client_t *c, const char *cmd) {
-  char section[128];
+  char        section[128];
   const char *uname = (c->username && c->username[0]) ? c->username : "*";
   snprintf(section, sizeof(section), "user:%s", uname);
   resp_object *sec = resp_map_get(domain_cfg, section);
@@ -180,8 +179,7 @@ static bool user_has_permit(api_client_t *c, const char *cmd) {
           if (val->type == RESPT_ARRAY) {
             for (size_t j = 0; j < val->u.arr.n; j++) {
               resp_object *p = &val->u.arr.elem[j];
-              if (p->type == RESPT_BULK && p->u.s && permit_matches(p->u.s, cmd))
-                return true;
+              if (p->type == RESPT_BULK && p->u.s && permit_matches(p->u.s, cmd)) return true;
             }
           } else if (val->type == RESPT_BULK && val->u.s && permit_matches(val->u.s, cmd)) {
             return true;
@@ -201,8 +199,7 @@ static bool user_has_permit(api_client_t *c, const char *cmd) {
             if (val->type == RESPT_ARRAY) {
               for (size_t j = 0; j < val->u.arr.n; j++) {
                 resp_object *p = &val->u.arr.elem[j];
-                if (p->type == RESPT_BULK && p->u.s && permit_matches(p->u.s, cmd))
-                  return true;
+                if (p->type == RESPT_BULK && p->u.s && permit_matches(p->u.s, cmd)) return true;
               }
             } else if (val->type == RESPT_BULK && val->u.s && permit_matches(val->u.s, cmd)) {
               return true;
@@ -228,9 +225,8 @@ static int cmd_compare(const void *a, const void *b, void *udata) {
 }
 
 void api_register_cmd(const char *name, char (*func)(api_client_t *, char **, int)) {
-  if (!cmd_map)
-    cmd_map = hashmap_new(sizeof(api_cmd_entry), 0, 0, 0, cmd_hash, cmd_compare, NULL, NULL);
-  hashmap_set(cmd_map, &(api_cmd_entry){ .name = name, .func = func });
+  if (!cmd_map) cmd_map = hashmap_new(sizeof(api_cmd_entry), 0, 0, 0, cmd_hash, cmd_compare, NULL, NULL);
+  hashmap_set(cmd_map, &(api_cmd_entry){.name = name, .func = func});
   log_trace("api: registered command '%s'", name);
 }
 
@@ -249,21 +245,23 @@ static int domain_cmd_compare(const void *a, const void *b, void *udata) {
 void api_register_domain_cmd(const char *name, domain_cmd_fn func) {
   if (!domain_cmd_map)
     domain_cmd_map = hashmap_new(sizeof(domain_cmd_entry), 0, 0, 0, domain_cmd_hash, domain_cmd_compare, NULL, NULL);
-  hashmap_set(domain_cmd_map, &(domain_cmd_entry){ .name = name, .func = func });
+  hashmap_set(domain_cmd_map, &(domain_cmd_entry){.name = name, .func = func});
   log_trace("api: registered domain command '%s'", name);
 }
 
 static char cmdAUTH(api_client_t *c, char **args, int nargs) {
   if (nargs != 3) {
-    api_write_err(c, "wrong number of arguments for 'auth' command (AUTH username password)");
+    api_write_err(c,
+                  "wrong number of arguments for 'auth' command (AUTH "
+                  "username password)");
     return 1;
   }
   const char *uname = args[1];
   const char *pass  = args[2];
-  char section[128];
+  char        section[128];
   snprintf(section, sizeof(section), "user:%s", uname);
-  resp_object *sec = resp_map_get(domain_cfg, section);
-  const char *secret = sec ? resp_map_get_string(sec, "secret") : NULL;
+  resp_object *sec    = resp_map_get(domain_cfg, section);
+  const char  *secret = sec ? resp_map_get_string(sec, "secret") : NULL;
   if (secret && pass && strcmp(secret, pass) == 0) {
     free(c->username);
     c->username = strdup(uname);
@@ -277,15 +275,14 @@ static char cmdAUTH(api_client_t *c, char **args, int nargs) {
 
 static char cmdPING(api_client_t *c, char **args, int nargs) {
   (void)args;
-  if (nargs == 1)
-    return api_write_cstr(c, "+PONG\r\n") ? 1 : 0;
-  if (nargs == 2)
-    return api_write_bulk_cstr(c, args[1]) ? 1 : 0;
+  if (nargs == 1) return api_write_cstr(c, "+PONG\r\n") ? 1 : 0;
+  if (nargs == 2) return api_write_bulk_cstr(c, args[1]) ? 1 : 0;
   return api_write_err(c, "wrong number of arguments for 'ping' command") ? 1 : 0;
 }
 
 static char cmdQUIT(api_client_t *c, char **args, int nargs) {
-  (void)args; (void)nargs;
+  (void)args;
+  (void)nargs;
   api_write_ok(c);
   return 0;
 }
@@ -294,23 +291,24 @@ static bool is_builtin(const char *name);
 
 static char cmdCOMMAND(api_client_t *c, char **args, int nargs) {
   (void)args;
-  if (!cmd_map && !domain_cmd_map)
-    return api_write_array(c, 0) ? 1 : 0;
+  if (!cmd_map && !domain_cmd_map) return api_write_array(c, 0) ? 1 : 0;
 
   resp_object *result = resp_array_init();
   if (!result) return 0;
 
   if (domain_cmd_map) {
     size_t iter = 0;
-    void *item;
+    void  *item;
     while (hashmap_iter(domain_cmd_map, &iter, &item)) {
       const domain_cmd_entry *e = item;
-      if (!user_has_permit(c, e->name))
-        continue;
+      if (!user_has_permit(c, e->name)) continue;
 
       resp_array_append_bulk(result, e->name);
       resp_object *meta = resp_array_init();
-      if (!meta) { resp_free(result); return 0; }
+      if (!meta) {
+        resp_free(result);
+        return 0;
+      }
       resp_array_append_bulk(meta, "summary");
       resp_array_append_bulk(meta, "UDP hole proxy command");
       resp_array_append_obj(result, meta);
@@ -319,22 +317,24 @@ static char cmdCOMMAND(api_client_t *c, char **args, int nargs) {
 
   if (cmd_map) {
     size_t iter = 0;
-    void *item;
+    void  *item;
     while (hashmap_iter(cmd_map, &iter, &item)) {
       const api_cmd_entry *e = item;
-      if (!is_builtin(e->name) && !user_has_permit(c, e->name))
-        continue;
+      if (!is_builtin(e->name) && !user_has_permit(c, e->name)) continue;
 
       resp_array_append_bulk(result, e->name);
       resp_object *meta = resp_array_init();
-      if (!meta) { resp_free(result); return 0; }
+      if (!meta) {
+        resp_free(result);
+        return 0;
+      }
       resp_array_append_bulk(meta, "summary");
       resp_array_append_bulk(meta, "UDP hole proxy command");
       resp_array_append_obj(result, meta);
     }
   }
 
-  char *out_buf = NULL;
+  char  *out_buf = NULL;
   size_t out_len = 0;
   if (resp_serialize(result, &out_buf, &out_len) != 0 || !out_buf) {
     resp_free(result);
@@ -348,16 +348,14 @@ static char cmdCOMMAND(api_client_t *c, char **args, int nargs) {
 }
 
 static void init_builtins(void) {
-  api_register_cmd("auth",    cmdAUTH);
-  api_register_cmd("ping",    cmdPING);
-  api_register_cmd("quit",    cmdQUIT);
+  api_register_cmd("auth", cmdAUTH);
+  api_register_cmd("ping", cmdPING);
+  api_register_cmd("quit", cmdQUIT);
   api_register_cmd("command", cmdCOMMAND);
 }
 
 static bool is_builtin(const char *name) {
-  return (strcasecmp(name, "auth") == 0 ||
-          strcasecmp(name, "ping") == 0 ||
-          strcasecmp(name, "quit") == 0 ||
+  return (strcasecmp(name, "auth") == 0 || strcasecmp(name, "ping") == 0 || strcasecmp(name, "quit") == 0 ||
           strcasecmp(name, "command") == 0);
 }
 
@@ -366,7 +364,7 @@ static void dispatch_command(api_client_t *c, char **args, int nargs) {
 
   for (char *p = args[0]; *p; p++) *p = (char)tolower((unsigned char)*p);
 
-  const domain_cmd_entry *dcmd = hashmap_get(domain_cmd_map, &(domain_cmd_entry){ .name = args[0] });
+  const domain_cmd_entry *dcmd = hashmap_get(domain_cmd_map, &(domain_cmd_entry){.name = args[0]});
   if (dcmd) {
     if (!is_builtin(args[0])) {
       if (!user_has_permit(c, args[0])) {
@@ -390,7 +388,7 @@ static void dispatch_command(api_client_t *c, char **args, int nargs) {
       return;
     }
 
-    char *out_buf = NULL;
+    char  *out_buf = NULL;
     size_t out_len = 0;
     if (resp_serialize(result, &out_buf, &out_len) != 0 || !out_buf) {
       resp_free(result);
@@ -404,7 +402,7 @@ static void dispatch_command(api_client_t *c, char **args, int nargs) {
     return;
   }
 
-  const api_cmd_entry *cmd = hashmap_get(cmd_map, &(api_cmd_entry){ .name = args[0] });
+  const api_cmd_entry *cmd = hashmap_get(cmd_map, &(api_cmd_entry){.name = args[0]});
   if (!cmd) {
     api_write_err(c, "unknown command");
     return;
@@ -425,17 +423,17 @@ static void dispatch_command(api_client_t *c, char **args, int nargs) {
 }
 
 static int *create_listen_socket(const char *listen_addr) {
-  const char *default_port = "6379";
-  resp_object *api_sec = resp_map_get(domain_cfg, "udphole");
+  const char  *default_port = "6379";
+  resp_object *api_sec      = resp_map_get(domain_cfg, "udphole");
   if (api_sec) {
     const char *cfg_port = resp_map_get_string(api_sec, "port");
     if (cfg_port && cfg_port[0]) default_port = cfg_port;
   }
 
   if (listen_addr && strncmp(listen_addr, "unix://", 7) == 0) {
-    const char *socket_path = listen_addr + 7;
+    const char *socket_path  = listen_addr + 7;
     const char *socket_owner = api_sec ? resp_map_get_string(api_sec, "socket_owner") : NULL;
-    int *fds = unix_listen(socket_path, SOCK_STREAM, socket_owner);
+    int        *fds          = unix_listen(socket_path, SOCK_STREAM, socket_owner);
     if (!fds) {
       return NULL;
     }
@@ -453,8 +451,8 @@ static int *create_listen_socket(const char *listen_addr) {
 
 static void handle_accept(int ready_fd) {
   struct sockaddr_storage addr;
-  socklen_t addrlen = sizeof(addr);
-  int fd = accept(ready_fd, (struct sockaddr *)&addr, &addrlen);
+  socklen_t               addrlen = sizeof(addr);
+  int                     fd      = accept(ready_fd, (struct sockaddr *)&addr, &addrlen);
   if (fd < 0) return;
   set_socket_nonblocking(fd, 1);
 
@@ -484,8 +482,8 @@ int api_server_pt(int64_t timestamp, struct pt_task *task) {
   }
 
   if (udata->server_fds == NULL) {
-    resp_object *api_sec = resp_map_get(domain_cfg, "udphole");
-    const char *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
+    resp_object *api_sec    = resp_map_get(domain_cfg, "udphole");
+    const char  *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
 
     if (!listen_str || !listen_str[0]) {
       return SCHED_RUNNING;
@@ -538,7 +536,7 @@ int api_client_pt(int64_t timestamp, struct pt_task *task) {
     return SCHED_RUNNING;
   }
 
-  char buf[1];
+  char    buf[1];
   ssize_t n = recv(state->fd, buf, 1, MSG_PEEK);
   if (n <= 0) {
     goto cleanup;
@@ -560,12 +558,12 @@ int api_client_pt(int64_t timestamp, struct pt_task *task) {
   }
 
   char *args[MAX_ARGS];
-  int nargs = 0;
+  int   nargs = 0;
   for (size_t i = 0; i < cmd->u.arr.n && nargs < MAX_ARGS; i++) {
     resp_object *elem = &cmd->u.arr.elem[i];
     if (elem->type == RESPT_BULK && elem->u.s) {
       args[nargs++] = elem->u.s;
-      elem->u.s = NULL;
+      elem->u.s     = NULL;
     } else if (elem->type == RESPT_SIMPLE) {
       args[nargs++] = elem->u.s ? elem->u.s : "";
     }

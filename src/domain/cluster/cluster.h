@@ -6,7 +6,7 @@
 
 typedef struct {
   cluster_nodes_t *nodes;
-  int initialized;
+  int              initialized;
 } cluster_state_t;
 
 extern cluster_state_t *cluster_state;
