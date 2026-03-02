@@ -3,7 +3,6 @@
 
 #include "common/resp.h"
 
-extern resp_object *global_cfg;
 extern resp_object *pending_cfg;
 
 void config_init(void);

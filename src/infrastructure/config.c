@@ -4,8 +4,8 @@
 #include "rxi/log.h"
 #include "infrastructure/config.h"
 #include "common/resp.h"
+#include "domain/config.h"
 
-resp_object *global_cfg = NULL;
 resp_object *pending_cfg = NULL;
 
 static const char *stored_config_path = NULL;
@@ -19,36 +19,57 @@ static int config_handler(void *user, const char *section, const char *name, con
     resp_map_set(cfg, section, sec);
     sec = resp_map_get(cfg, section);
   }
-  resp_array_append_bulk(sec, name);
-  resp_array_append_bulk(sec, value);
+  
+  if (strcmp(name, "cluster") == 0) {
+    resp_object *arr = resp_map_get(sec, "cluster");
+    if (!arr) {
+      arr = resp_array_init();
+      resp_map_set(sec, "cluster", arr);
+      arr = resp_map_get(sec, "cluster");
+    }
+    if (!arr || arr->type != RESPT_ARRAY) {
+      log_error("config: 'cluster' key already exists as non-array");
+      return 0;
+    }
+    resp_array_append_bulk(arr, value);
+  } else {
+    resp_array_append_bulk(sec, name);
+    resp_array_append_bulk(sec, value);
+  }
   return 1;
 }
 
 void config_init(void) {
-  global_cfg = resp_array_init();
-  config_load(global_cfg, config_get_path());
+  if (pending_cfg) resp_free(pending_cfg);
+  pending_cfg = resp_array_init();
+  config_load(NULL, config_get_path());
+  resp_object *old = domain_cfg;
+  domain_cfg = pending_cfg;
+  pending_cfg = NULL;
+  if (old) resp_free(old);
 }
 
 int config_load(resp_object *cfg, const char *path) {
-  return ini_parse(path, config_handler, cfg);
+  resp_object *load_cfg = cfg;
+  if (!load_cfg) {
+    load_cfg = pending_cfg;
+  }
+  return ini_parse(path, config_handler, load_cfg);
 }
 
 void config_pending_init(void) {
+  if (pending_cfg) resp_free(pending_cfg);
   pending_cfg = resp_array_init();
-}
-
-void config_swap(void) {
-  resp_object *old = global_cfg;
-  global_cfg = pending_cfg;
-  pending_cfg = old;
-  if (old) resp_free(old);
 }
 
 int config_reload(void) {
   config_pending_init();
-  int r = config_load(pending_cfg, config_get_path());
+  int r = config_load(NULL, config_get_path());
   if (r < 0) return -1;
-  config_swap();
+  resp_object *old = domain_cfg;
+  domain_cfg = pending_cfg;
+  pending_cfg = NULL;
+  if (old) resp_free(old);
   return 0;
 }
 

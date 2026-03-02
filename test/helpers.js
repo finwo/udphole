@@ -3,7 +3,7 @@ const net = require('net');
 const dgram = require('dgram');
 const path = require('path');
 
-const DAEMON_PATH = path.join(__dirname, '..', 'udphole');
+const DAEMON_PATH = path.resolve(__dirname, '..', 'udphole');
 const TIMEOUT = 2000;
 
 function sleep(ms) {
@@ -22,10 +22,22 @@ function findFreePort() {
   });
 }
 
-function spawnDaemon(configPath) {
+function killAllDaemons() {
+  return new Promise((resolve) => {
+    const { execSync } = require('child_process');
+    try { execSync('pkill -9 udphole 2>/dev/null', { stdio: 'ignore' }); } catch(e) {}
+    sleep(1000).then(resolve);
+  });
+}
+
+function spawnDaemon(configPath, command) {
   return new Promise(async (resolve, reject) => {
     await sleep(500);
-    const daemon = spawn(DAEMON_PATH, ['-f', configPath, 'daemon', '-D'], {
+    const args = ['-f', configPath];
+    args.push(command || 'daemon');
+    args.push('-D');
+
+    const daemon = spawn(DAEMON_PATH, args, {
       stdio: ['ignore', 'pipe', 'pipe', 'pipe']
     });
 
@@ -34,10 +46,11 @@ function spawnDaemon(configPath) {
       reject(new Error(`Daemon start timeout. Output: ${output}`));
     }, TIMEOUT);
 
+    const started = command === 'cluster' ? 'cluster' : 'daemon started';
     daemon.stderr.on('data', (data) => {
       process.stderr.write(data.toString());
       output += data.toString();
-      if (output.includes('daemon started')) {
+      if (output.includes(started)) {
         clearTimeout(startTimeout);
         sleep(200).then(() => resolve(daemon));
       }
@@ -47,14 +60,6 @@ function spawnDaemon(configPath) {
       clearTimeout(startTimeout);
       reject(err);
     });
-  });
-}
-
-function killAllDaemons() {
-  return new Promise((resolve) => {
-    const { execSync } = require('child_process');
-    try { execSync('pkill -9 udphole 2>/dev/null', { stdio: 'ignore' }); } catch(e) {}
-    sleep(1000).then(resolve);
   });
 }
 

@@ -127,6 +127,36 @@ session.forward.create nat-traversal client-b client-a
 
 ---
 
+## Running the cluster
+
+The cluster command acts as a proxy to multiple backing udphole daemon nodes.
+
+```bash
+# Foreground
+./udphole cluster
+
+# Background
+./udphole -f /etc/udphole.conf cluster -d
+
+# Force foreground
+./udphole -f /etc/udphole.conf cluster -D
+```
+
+| Option | Short | Description |
+|--------|--------|--------------|
+| `--daemonize` | `-d` | Run in background (double fork, detach from terminal). |
+| `--no-daemonize` | `-D` | Force foreground; overrides `daemonize=1` in config. |
+
+The cluster provides the **exact same API** as the regular daemon but forwards commands to backing nodes:
+
+- `session.create` - Routes to the node with the lowest weight/sessioncount ratio
+- `session.list` / `session.count` - Aggregates results from all nodes
+- `session.info` / `session.destroy` / `socket.*` / `forward.*` - Routes to the node that has the session
+
+The cluster holds no local state - it queries backing nodes on demand and performs healthchecks (every 5 seconds) to track node availability.
+
+---
+
 ## Configuration
 
 ```ini
@@ -147,11 +177,20 @@ permit = ping
 
 | Option | Description |
 |--------|-------------|
-| `ports` | Port range for UDP sockets, as `low-high` (e.g. `7000-7999`). Default 7000–7999. |
+| `ports` | Port range for UDP sockets, as `low-high` (e.g. `7000-7999`). Default 7000–7999. (daemon only) |
 | `listen` | API server listen address. If not set, API server is disabled. |
-| `advertise` | Optional. IP address to advertise in API responses instead of the port number. Useful when behind NAT. |
+| `advertise` | Optional. IP address to advertise in API responses instead of the port number. Useful when behind NAT. (daemon only) |
+| `cluster` | Repeat for each backing node name. Enables cluster mode and specifies node names. |
 
-### `[user:<name>]`
+### `[cluster:<name>]`
+
+| Option | Description |
+|--------|-------------|
+| `address` | Connection string for the backing node (e.g., `tcp://127.0.0.1:19122` or `unix:///path/to/socket`). |
+| `username` | Username for authentication to the backing node. |
+| `password` | Password for authentication to the backing node. |
+
+### `[api:<name>]`
 
 | Option | Description |
 |--------|-------------|

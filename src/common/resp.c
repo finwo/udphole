@@ -396,6 +396,14 @@ resp_object *resp_array_init(void) {
   return o;
 }
 
+resp_object *resp_simple_init(const char *value) {
+  resp_object *o = calloc(1, sizeof(resp_object));
+  if (!o) return NULL;
+  o->type = RESPT_SIMPLE;
+  o->u.s = value ? strdup(value) : NULL;
+  return o;
+}
+
 int resp_array_append_obj(resp_object *destination, resp_object *value) {
   if (!destination || destination->type != RESPT_ARRAY || !value) return -1;
   size_t n = destination->u.arr.n;
@@ -408,10 +416,29 @@ int resp_array_append_obj(resp_object *destination, resp_object *value) {
   return 0;
 }
 
+resp_object *resp_error_init(const char *value) {
+  resp_object *o = calloc(1, sizeof(resp_object));
+  if (!o) return NULL;
+  o->type = RESPT_ERROR;
+  o->u.s = strdup(value ? value : "");
+  if (!o->u.s) { free(o); return NULL; }
+  return o;
+}
+
 int resp_array_append_simple(resp_object *destination, const char *str) {
   resp_object *o = calloc(1, sizeof(resp_object));
   if (!o) return -1;
   o->type = RESPT_SIMPLE;
+  o->u.s = strdup(str ? str : "");
+  if (!o->u.s) { free(o); return -1; }
+  if (resp_array_append_obj(destination, o) != 0) { free(o->u.s); free(o); return -1; }
+  return 0;
+}
+
+int resp_array_append_error(resp_object *destination, const char *str) {
+  resp_object *o = calloc(1, sizeof(resp_object));
+  if (!o) return -1;
+  o->type = RESPT_ERROR;
   o->u.s = strdup(str ? str : "");
   if (!o->u.s) { free(o); return -1; }
   if (resp_array_append_obj(destination, o) != 0) { free(o->u.s); free(o); return -1; }

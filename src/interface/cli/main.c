@@ -14,7 +14,9 @@ extern "C" {
 #include "interface/cli/common.h"
 #include "interface/cli/command/list_commands.h"
 #include "interface/cli/command/daemon.h"
+#include "interface/cli/command/cluster.h"
 #include "infrastructure/config.h"
+#include "domain/cluster/cluster.h"
 
 #ifdef __cplusplus
 }
@@ -43,6 +45,7 @@ static void logfile_callback(log_Event *ev) {
       log_file = fopen(log_path, "a");
     }
     config_reload();
+    cluster_reload();
   }
   if (log_file) {
     char buf[64];
@@ -178,6 +181,12 @@ int main(int argc, const char **argv) {
     "daemon",
     "Run the udphole daemon",
     cli_cmd_daemon
+  );
+
+  cli_register_command(
+    "cluster",
+    "Run the udphole cluster",
+    cli_cmd_cluster
   );
 
   struct argparse argparse;

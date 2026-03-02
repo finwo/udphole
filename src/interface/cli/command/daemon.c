@@ -87,22 +87,6 @@ int cli_cmd_daemon(int argc, const char **argv) {
 
   domain_config_init();
 
-  if (global_cfg) {
-    resp_object *cfg_sec = resp_map_get(global_cfg, "udphole");
-    if (cfg_sec) {
-      const char *ports_str = resp_map_get_string(cfg_sec, "ports");
-      if (ports_str) {
-        int port_low = 7000, port_high = 7999;
-        sscanf(ports_str, "%d-%d", &port_low, &port_high);
-        domain_config_set_ports(port_low, port_high);
-      }
-      const char *advertise = resp_map_get_string(cfg_sec, "advertise");
-      if (advertise) {
-        domain_config_set_advertise(advertise);
-      }
-    }
-  }
-
   register_domain_commands();
 
   log_info("udphole: starting daemon");
