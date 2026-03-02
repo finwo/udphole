@@ -123,6 +123,8 @@ test: $(BIN)
 	@node test/listen-relearn-unix.js
 	@sleep 1
 	@node test/connect-drop-unknown.js
+	@sleep 1
+	@node test/cluster.js
 
 .PHONY: clean
 clean:

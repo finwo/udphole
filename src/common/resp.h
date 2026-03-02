@@ -49,6 +49,12 @@ int resp_serialize(const resp_object *o, char **out_buf, size_t *out_len);
 resp_object *resp_array_init(void);
 /* Returns new array object: caller owns the result, must call resp_free() */
 
+resp_object *resp_simple_init(const char *value);
+/* Returns new simple string object: caller owns the result, must call resp_free() */
+
+resp_object *resp_error_init(const char *value);
+/* Returns new error object: caller owns the result, must call resp_free() */
+
 int resp_array_append_obj(resp_object *destination, resp_object *value);
 /* Takes ownership of value */
 

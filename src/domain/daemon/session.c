@@ -20,6 +20,10 @@
 #include "tidwall/hashmap.h"
 #include "session.h"
 
+static resp_object *get_udphole_cfg(void) {
+  return domain_cfg ? resp_map_get(domain_cfg, "udphole") : NULL;
+}
+
 #define SESSION_HASH_SIZE 256
 #define BUFFER_SIZE 4096
 #define DEFAULT_IDLE_EXPIRY 60
@@ -79,12 +83,19 @@ static socket_t *find_socket(session_t *s, const char *socket_id) {
 }
 
 static int alloc_port(void) {
-  if (!domain_cfg) return 0;
-  for (int i = 0; i < domain_cfg->port_high - domain_cfg->port_low; i++) {
-    int port = domain_cfg->port_cur + i;
-    if (port > domain_cfg->port_high) port = domain_cfg->port_low;
-    domain_cfg->port_cur = port + 1;
-    if (domain_cfg->port_cur > domain_cfg->port_high) domain_cfg->port_cur = domain_cfg->port_low;
+  resp_object *udphole = get_udphole_cfg();
+  if (!udphole) return 0;
+  const char *ports_str = resp_map_get_string(udphole, "ports");
+  int port_low = 7000, port_high = 7999, port_cur = 7000;
+  if (ports_str) sscanf(ports_str, "%d-%d", &port_low, &port_high);
+  const char *port_cur_str = resp_map_get_string(udphole, "_port_cur");
+  if (port_cur_str) port_cur = atoi(port_cur_str);
+  
+  for (int i = 0; i < port_high - port_low; i++) {
+    int port = port_cur + i;
+    if (port > port_high) port = port_low;
+    port_cur = port + 1;
+    if (port_cur > port_high) port_cur = port_low;
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -520,8 +531,7 @@ resp_object *domain_session_create(const char *cmd, resp_object *args) {
 
   spawn_session_pt(s);
 
-  resp_object *res = resp_array_init();
-  resp_array_append_simple(res, "OK");
+  resp_object *res = resp_simple_init("OK");
   return res;
 }
 
@@ -562,8 +572,7 @@ resp_object *domain_session_info(const char *cmd, resp_object *args) {
 
   session_t *s = find_session(session_id);
   if (!s) {
-    resp_object *err = resp_array_init();
-    resp_array_append_simple(err, "ERR session not found");
+    resp_object *err = resp_error_init("ERR session not found");
     return err;
   }
 
@@ -626,15 +635,13 @@ resp_object *domain_session_destroy(const char *cmd, resp_object *args) {
 
   session_t *s = find_session(session_id);
   if (!s) {
-    resp_object *err = resp_array_init();
-    resp_array_append_simple(err, "ERR session not found");
+    resp_object *err = resp_error_init("ERR session not found");
     return err;
   }
 
   destroy_session(s);
 
-  resp_object *res = resp_array_init();
-  resp_array_append_simple(res, "OK");
+  resp_object *res = resp_simple_init("OK");
   return res;
 }
 
@@ -664,8 +671,7 @@ resp_object *domain_socket_create_listen(const char *cmd, resp_object *args) {
 
   session_t *s = find_session(session_id);
   if (!s) {
-    resp_object *err = resp_array_init();
-    resp_array_append_simple(err, "ERR session not found");
+    resp_object *err = resp_error_init("ERR session not found");
     return err;
   }
 
@@ -678,7 +684,9 @@ resp_object *domain_socket_create_listen(const char *cmd, resp_object *args) {
 
   resp_object *res = resp_array_init();
   resp_array_append_int(res, sock->local_port);
-  resp_array_append_bulk(res, domain_cfg && domain_cfg->advertise_addr ? domain_cfg->advertise_addr : "");
+  resp_object *udphole = get_udphole_cfg();
+  const char *advertise = udphole ? resp_map_get_string(udphole, "advertise") : NULL;
+  resp_array_append_bulk(res, advertise ? advertise : "");
   return res;
 }
 
@@ -718,8 +726,7 @@ resp_object *domain_socket_create_connect(const char *cmd, resp_object *args) {
 
   session_t *s = find_session(session_id);
   if (!s) {
-    resp_object *err = resp_array_init();
-    resp_array_append_simple(err, "ERR session not found");
+    resp_object *err = resp_error_init("ERR session not found");
     return err;
   }
 
@@ -732,7 +739,9 @@ resp_object *domain_socket_create_connect(const char *cmd, resp_object *args) {
 
   resp_object *res = resp_array_init();
   resp_array_append_int(res, sock->local_port);
-  resp_array_append_bulk(res, domain_cfg && domain_cfg->advertise_addr ? domain_cfg->advertise_addr : "");
+  resp_object *udphole = get_udphole_cfg();
+  const char *advertise = udphole ? resp_map_get_string(udphole, "advertise") : NULL;
+  resp_array_append_bulk(res, advertise ? advertise : "");
   return res;
 }
 
@@ -762,8 +771,7 @@ resp_object *domain_socket_destroy(const char *cmd, resp_object *args) {
 
   session_t *s = find_session(session_id);
   if (!s) {
-    resp_object *err = resp_array_init();
-    resp_array_append_simple(err, "ERR session not found");
+    resp_object *err = resp_error_init("ERR session not found");
     return err;
   }
 
@@ -773,8 +781,7 @@ resp_object *domain_socket_destroy(const char *cmd, resp_object *args) {
     return err;
   }
 
-  resp_object *res = resp_array_init();
-  resp_array_append_simple(res, "OK");
+  resp_object *res = resp_simple_init("OK");
   return res;
 }
 
@@ -799,8 +806,7 @@ resp_object *domain_forward_list(const char *cmd, resp_object *args) {
 
   session_t *s = find_session(session_id);
   if (!s) {
-    resp_object *err = resp_array_init();
-    resp_array_append_simple(err, "ERR session not found");
+    resp_object *err = resp_error_init("ERR session not found");
     return err;
   }
 
@@ -842,8 +848,7 @@ resp_object *domain_forward_create(const char *cmd, resp_object *args) {
 
   session_t *s = find_session(session_id);
   if (!s) {
-    resp_object *err = resp_array_init();
-    resp_array_append_simple(err, "ERR session not found");
+    resp_object *err = resp_error_init("ERR session not found");
     return err;
   }
 
@@ -869,8 +874,7 @@ resp_object *domain_forward_create(const char *cmd, resp_object *args) {
 
   log_debug("udphole: created forward %s -> %s in session %s", src_socket_id, dst_socket_id, session_id);
 
-  resp_object *res = resp_array_init();
-  resp_array_append_simple(res, "OK");
+  resp_object *res = resp_simple_init("OK");
   return res;
 }
 
@@ -904,8 +908,7 @@ resp_object *domain_forward_destroy(const char *cmd, resp_object *args) {
 
   session_t *s = find_session(session_id);
   if (!s) {
-    resp_object *err = resp_array_init();
-    resp_array_append_simple(err, "ERR session not found");
+    resp_object *err = resp_error_init("ERR session not found");
     return err;
   }
 
@@ -915,8 +918,7 @@ resp_object *domain_forward_destroy(const char *cmd, resp_object *args) {
     return err;
   }
 
-  resp_object *res = resp_array_init();
-  resp_array_append_simple(res, "OK");
+  resp_object *res = resp_simple_init("OK");
   return res;
 }
 
@@ -970,12 +972,16 @@ resp_object *domain_session_count(const char *cmd, resp_object *args) {
 int session_manager_pt(int64_t timestamp, struct pt_task *task) {
   session_manager_udata_t *udata = task->udata;
 
-  if (!domain_cfg) {
+  resp_object *udphole = get_udphole_cfg();
+  if (!udphole) {
     return SCHED_RUNNING;
   }
 
   if (!udata->initialized) {
-    log_info("udphole: manager started with port range %d-%d", domain_cfg->port_low, domain_cfg->port_high);
+    const char *ports_str = resp_map_get_string(udphole, "ports");
+    int port_low = 7000, port_high = 7999;
+    if (ports_str) sscanf(ports_str, "%d-%d", &port_low, &port_high);
+    log_info("udphole: manager started with port range %d-%d", port_low, port_high);
     udata->initialized = 1;
   }
 

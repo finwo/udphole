@@ -24,6 +24,7 @@
 #include "common/scheduler.h"
 #include "common/socket_util.h"
 #include "infrastructure/config.h"
+#include "domain/config.h"
 #include "interface/api/server.h"
 #include "common/resp.h"
 
@@ -169,7 +170,7 @@ static bool user_has_permit(api_client_t *c, const char *cmd) {
   char section[128];
   const char *uname = (c->username && c->username[0]) ? c->username : "*";
   snprintf(section, sizeof(section), "user:%s", uname);
-  resp_object *sec = resp_map_get(global_cfg, section);
+  resp_object *sec = resp_map_get(domain_cfg, section);
   if (sec && sec->type == RESPT_ARRAY) {
     for (size_t i = 0; i < sec->u.arr.n; i += 2) {
       if (i + 1 < sec->u.arr.n) {
@@ -190,7 +191,7 @@ static bool user_has_permit(api_client_t *c, const char *cmd) {
     }
   }
   if (strcmp(uname, "*") != 0) {
-    resp_object *anon = resp_map_get(global_cfg, "user:*");
+    resp_object *anon = resp_map_get(domain_cfg, "user:*");
     if (anon && anon->type == RESPT_ARRAY) {
       for (size_t i = 0; i < anon->u.arr.n; i += 2) {
         if (i + 1 < anon->u.arr.n) {
@@ -261,7 +262,7 @@ static char cmdAUTH(api_client_t *c, char **args, int nargs) {
   const char *pass  = args[2];
   char section[128];
   snprintf(section, sizeof(section), "user:%s", uname);
-  resp_object *sec = resp_map_get(global_cfg, section);
+  resp_object *sec = resp_map_get(domain_cfg, section);
   const char *secret = sec ? resp_map_get_string(sec, "secret") : NULL;
   if (secret && pass && strcmp(secret, pass) == 0) {
     free(c->username);
@@ -425,7 +426,7 @@ static void dispatch_command(api_client_t *c, char **args, int nargs) {
 
 static int *create_listen_socket(const char *listen_addr) {
   const char *default_port = "6379";
-  resp_object *api_sec = resp_map_get(global_cfg, "udphole");
+  resp_object *api_sec = resp_map_get(domain_cfg, "udphole");
   if (api_sec) {
     const char *cfg_port = resp_map_get_string(api_sec, "port");
     if (cfg_port && cfg_port[0]) default_port = cfg_port;
@@ -483,7 +484,7 @@ int api_server_pt(int64_t timestamp, struct pt_task *task) {
   }
 
   if (udata->server_fds == NULL) {
-    resp_object *api_sec = resp_map_get(global_cfg, "udphole");
+    resp_object *api_sec = resp_map_get(domain_cfg, "udphole");
     const char *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
 
     if (!listen_str || !listen_str[0]) {
