@@ -22,15 +22,15 @@ static int config_handler(void *user, const char *section, const char *name, con
     sec = resp_map_get(cfg, section);
   }
 
-  if (strcmp(name, "cluster") == 0) {
-    resp_object *arr = resp_map_get(sec, "cluster");
+  if (strcmp(name, "cluster") == 0 || strcmp(name, "listen") == 0) {
+    resp_object *arr = resp_map_get(sec, name);
     if (!arr) {
       arr = resp_array_init();
-      resp_map_set(sec, "cluster", arr);
-      arr = resp_map_get(sec, "cluster");
+      resp_map_set(sec, name, arr);
+      arr = resp_map_get(sec, name);
     }
     if (!arr || arr->type != RESPT_ARRAY) {
-      log_error("config: 'cluster' key already exists as non-array");
+      log_error("config: '%s' key already exists as non-array", name);
       return 0;
     }
     resp_array_append_bulk(arr, value);

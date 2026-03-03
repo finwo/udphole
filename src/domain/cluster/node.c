@@ -15,6 +15,7 @@
 
 #include "common/resp.h"
 #include "common/socket_util.h"
+#include "common/url_utils.h"
 #include "rxi/log.h"
 
 #define QUERY_TIMEOUT_MS        500
@@ -23,39 +24,39 @@
 static int parse_address(const char *address, char **host, int *port, char **unix_path) {
   if (!address) return -1;
 
-  if (strncmp(address, "tcp://", 6) == 0) {
-    const char *hp    = address + 6;
-    const char *colon = strchr(hp, ':');
-    if (!colon) {
-      log_error("cluster: invalid tcp address '%s' (missing port)", address);
-      return -1;
-    }
+  struct parsed_url *purl = NULL;
+  if (parse_address_url(address, &purl) != 0) {
+    return -1;
+  }
 
-    size_t host_len = colon - hp;
-    *host           = malloc(host_len + 1);
-    if (!*host) return -1;
-    memcpy(*host, hp, host_len);
-    (*host)[host_len] = '\0';
-
-    *port = atoi(colon + 1);
-    if (*port <= 0) {
-      log_error("cluster: invalid port in tcp address '%s'", address);
-      free(*host);
-      *host = NULL;
-      return -1;
-    }
-    *unix_path = NULL;
-    return 0;
-
-  } else if (strncmp(address, "unix://", 7) == 0) {
-    *unix_path = strdup(address + 7);
+  if (purl->scheme && strcmp(purl->scheme, "unix") == 0) {
+    *unix_path = strdup(purl->path ? purl->path : "");
     *host      = NULL;
     *port      = 0;
+    parsed_url_free(purl);
     return 0;
   }
 
-  log_error("cluster: unknown address scheme in '%s' (expected tcp:// or unix://)", address);
-  return -1;
+  if (!purl->host) {
+    log_error("cluster: no host in address '%s'", address);
+    parsed_url_free(purl);
+    return -1;
+  }
+
+  *host      = strdup(purl->host);
+  *port      = purl->port ? atoi(purl->port) : 0;
+  *unix_path = NULL;
+
+  if (*port <= 0) {
+    log_error("cluster: invalid port in address '%s'", address);
+    free(*host);
+    *host = NULL;
+    parsed_url_free(purl);
+    return -1;
+  }
+
+  parsed_url_free(purl);
+  return 0;
 }
 
 int cluster_node_init(cluster_node_t *node, const char *name, const char *address, const char *username,

@@ -24,6 +24,7 @@
 #include "common/resp.h"
 #include "common/scheduler.h"
 #include "common/socket_util.h"
+#include "common/url_utils.h"
 #include "domain/config.h"
 #include "infrastructure/config.h"
 #include "rxi/log.h"
@@ -61,7 +62,6 @@ typedef struct {
   domain_cmd_fn func;
 } domain_cmd_entry;
 
-static char           *current_listen = NULL;
 static struct hashmap *cmd_map        = NULL;
 static struct hashmap *domain_cmd_map = NULL;
 
@@ -430,10 +430,17 @@ static int *create_listen_socket(const char *listen_addr) {
     if (cfg_port && cfg_port[0]) default_port = cfg_port;
   }
 
-  if (listen_addr && strncmp(listen_addr, "unix://", 7) == 0) {
-    const char *socket_path  = listen_addr + 7;
+  struct parsed_url *purl = NULL;
+  if (parse_address_url(listen_addr, &purl) != 0) {
+    log_error("api: failed to parse listen address '%s'", listen_addr);
+    return NULL;
+  }
+
+  if (purl->scheme && strcmp(purl->scheme, "unix") == 0) {
+    const char *socket_path  = purl->path;
     const char *socket_owner = api_sec ? resp_map_get_string(api_sec, "socket_owner") : NULL;
     int        *fds          = unix_listen(socket_path, SOCK_STREAM, socket_owner);
+    parsed_url_free(purl);
     if (!fds) {
       return NULL;
     }
@@ -441,7 +448,17 @@ static int *create_listen_socket(const char *listen_addr) {
     return fds;
   }
 
-  int *fds = tcp_listen(listen_addr, NULL, default_port);
+  char addr_buf[512];
+  if (purl->host && purl->port) {
+    snprintf(addr_buf, sizeof(addr_buf), "%s:%s", purl->host, purl->port);
+  } else if (purl->port) {
+    snprintf(addr_buf, sizeof(addr_buf), ":%s", purl->port);
+  } else {
+    snprintf(addr_buf, sizeof(addr_buf), ":%s", default_port);
+  }
+
+  int *fds = tcp_listen(addr_buf, NULL, default_port);
+  parsed_url_free(purl);
   if (!fds) {
     return NULL;
   }
@@ -483,24 +500,70 @@ int api_server_pt(int64_t timestamp, struct pt_task *task) {
 
   if (udata->server_fds == NULL) {
     resp_object *api_sec    = resp_map_get(domain_cfg, "udphole");
-    const char  *listen_str = api_sec ? resp_map_get_string(api_sec, "listen") : NULL;
+    resp_object *listen_arr = api_sec ? resp_map_get(api_sec, "listen") : NULL;
 
-    if (!listen_str || !listen_str[0]) {
+    if (!listen_arr || listen_arr->type != RESPT_ARRAY || listen_arr->u.arr.n == 0) {
       return SCHED_RUNNING;
     }
 
-    current_listen = strdup(listen_str);
-    if (!current_listen) {
-      return SCHED_ERROR;
+    int  **socket_arrays = NULL;
+    size_t num_listeners = 0;
+
+    for (size_t i = 0; i < listen_arr->u.arr.n; i++) {
+      if (listen_arr->u.arr.elem[i].type != RESPT_BULK || !listen_arr->u.arr.elem[i].u.s) {
+        continue;
+      }
+      const char *listen_addr = listen_arr->u.arr.elem[i].u.s;
+      int        *fds         = create_listen_socket(listen_addr);
+      if (!fds) {
+        log_fatal("api: failed to listen on %s", listen_addr);
+        for (size_t j = 0; j < num_listeners; j++) {
+          if (socket_arrays[j]) {
+            for (int k = 1; k <= socket_arrays[j][0]; k++) {
+              close(socket_arrays[j][k]);
+            }
+            free(socket_arrays[j]);
+          }
+        }
+        free(socket_arrays);
+        return SCHED_ERROR;
+      }
+      socket_arrays                  = realloc(socket_arrays, sizeof(int *) * (num_listeners + 1));
+      socket_arrays[num_listeners++] = fds;
     }
-    init_builtins();
-    udata->server_fds = create_listen_socket(current_listen);
+
+    int total_fds = 0;
+    for (size_t i = 0; i < num_listeners; i++) {
+      total_fds += socket_arrays[i][0];
+    }
+
+    udata->server_fds = calloc(total_fds + 1, sizeof(int));
     if (!udata->server_fds) {
-      log_fatal("api: failed to listen on %s", current_listen);
-      free(current_listen);
-      current_listen = NULL;
+      log_fatal("api: out of memory for listen sockets");
+      for (size_t i = 0; i < num_listeners; i++) {
+        free(socket_arrays[i]);
+      }
+      free(socket_arrays);
       return SCHED_ERROR;
     }
+    udata->server_fds[0] = 0;
+
+    for (size_t i = 0; i < num_listeners; i++) {
+      for (int j = 1; j <= socket_arrays[i][0]; j++) {
+        udata->server_fds[++udata->server_fds[0]] = socket_arrays[i][j];
+      }
+      free(socket_arrays[i]);
+    }
+    free(socket_arrays);
+
+    if (udata->server_fds[0] == 0) {
+      log_fatal("api: no listen sockets created");
+      free(udata->server_fds);
+      udata->server_fds = NULL;
+      return SCHED_ERROR;
+    }
+
+    init_builtins();
   }
 
   if (udata->server_fds && udata->server_fds[0] > 0) {

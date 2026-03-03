@@ -26,7 +26,7 @@ docker run -p 6379:6379 -p 7000-7999:7000-7999/udp finwo/udphole
 
 If no config file is mounted, the container auto-generates `/etc/udphole.conf` from environment variables:
 
-```yaml
+```ini
 [udphole]
 ports = 7000-7999
 listen = :6379
@@ -44,6 +44,29 @@ Mount your own config file to override defaults:
 docker run -p 6379:6379 -p 7000-7999:7000-7999/udp \
   -v /path/to/udphole.conf:/etc/udphole.conf:ro \
   finwo/udphole
+```
+
+### Listen Address Formats
+
+The `listen` directive supports multiple addresses:
+
+| Format | Description |
+|--------|-------------|
+| `:6379` | All interfaces, port 6379 |
+| `6379` | All interfaces, port 6379 |
+| `localhost:6379` | Loopback only |
+| `192.168.1.1:6379` | Specific IPv4 address |
+| `tcp://:6379` | Explicit TCP, all interfaces |
+| `tcp://localhost:6379` | Explicit TCP, loopback |
+| `unix:///tmp/udphole.sock` | Unix socket |
+
+Multiple listen addresses can be specified:
+
+```ini
+[udphole]
+listen = :6379
+listen = 192.168.1.1:6380
+listen = unix:///tmp/udphole.sock
 ```
 
 ## Cluster Mode
@@ -64,23 +87,21 @@ This generates:
 [udphole]
 ports = 7000-7999
 listen = :6379
-cluster = node1
-cluster = node2
+cluster = tcp://user:pass@192.168.1.10:6379
+cluster = tcp://user:pass@192.168.1.11:6379
 
 [user:admin]
 permit = *
 secret = supers3cret
-
-[cluster:node1]
-address = tcp://user:pass@192.168.1.10:6379
-username = user
-password = pass
-
-[cluster:node2]
-address = tcp://user:pass@192.168.1.11:6379
-username = user
-password = pass
 ```
+
+### Cluster Node Address Formats
+
+| Format | Description |
+|--------|-------------|
+| `tcp://host:port` | TCP connection |
+| `tcp://user:pass@host:port` | TCP with authentication |
+| `unix:///path/to/socket` | Unix socket |
 
 ## Docker Compose
 
