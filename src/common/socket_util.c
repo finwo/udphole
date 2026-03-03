@@ -104,7 +104,7 @@ int *tcp_listen(const char *addr, const char *default_host, const char *default_
   hints.ai_family   = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   hints.ai_flags    = AI_PASSIVE;
-  if (getaddrinfo(host[0] ? host : NULL, port, &hints, &res) != 0 || !res) {
+  if (getaddrinfo(host[0] ? (strcmp(host, "*") == 0 ? NULL : host) : NULL, port, &hints, &res) != 0 || !res) {
     log_error("tcp_listen: getaddrinfo failed for %s:%s", host, port);
     return NULL;
   }
@@ -116,7 +116,7 @@ int *tcp_listen(const char *addr, const char *default_host, const char *default_
   }
   fds[0] = 0;
 
-  int              listen_all = (host[0] == '\0');
+  int              listen_all = (host[0] == '\0' || strcmp(host, "*") == 0);
   struct addrinfo *p;
 
   for (p = res; p; p = p->ai_next) {
@@ -234,7 +234,7 @@ int *udp_recv(const char *addr, const char *default_host, const char *default_po
   hints.ai_family   = AF_UNSPEC;
   hints.ai_socktype = SOCK_DGRAM;
   hints.ai_flags    = AI_PASSIVE;
-  if (getaddrinfo(host[0] ? host : NULL, port, &hints, &res) != 0 || !res) {
+  if (getaddrinfo(host[0] ? (strcmp(host, "*") == 0 ? NULL : host) : NULL, port, &hints, &res) != 0 || !res) {
     log_error("udp_recv: getaddrinfo failed for %s:%s", host, port);
     return NULL;
   }
@@ -246,7 +246,7 @@ int *udp_recv(const char *addr, const char *default_host, const char *default_po
   }
   fds[0] = 0;
 
-  int              listen_all = (host[0] == '\0');
+  int              listen_all = (host[0] == '\0' || strcmp(host, "*") == 0);
   struct addrinfo *p;
 
   for (p = res; p; p = p->ai_next) {

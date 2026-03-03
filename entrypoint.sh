@@ -28,7 +28,11 @@ else
 
         if [ -n "$CLUSTER" ]; then
             for name in $(echo "$CLUSTER" | tr ',' ' '); do
-                echo "cluster = $name"
+                env_var="CLUSTER_$name"
+                eval "value=\$$env_var"
+                if [ -n "$value" ]; then
+                    echo "cluster = $value"
+                fi
             done
         fi
 
@@ -36,44 +40,6 @@ else
         echo "[user:${API_ADMIN_USER:-admin}]"
         echo "permit = *"
         echo "secret = ${API_ADMIN_PASS:-supers3cret}"
-
-        if [ -n "$CLUSTER" ]; then
-            for name in $(echo "$CLUSTER" | tr ',' ' '); do
-                env_var="CLUSTER_$name"
-                eval "value=\$$env_var"
-                if [ -n "$value" ]; then
-                    proto="${value%%://*}"
-                    rest="${value#*://}"
-
-                    # Check if URL contains user:pass@ (has credentials)
-                    case "$rest" in
-                        *@*)
-                            user="${rest%%:*}"
-                            rest="${rest#*:}"
-                            pass="${rest%%@*}"
-                            rest="${rest#*@}"
-                            has_creds=1
-                            ;;
-                        *)
-                            user=""
-                            pass=""
-                            has_creds=0
-                            ;;
-                    esac
-
-                    host="${rest%%:*}"
-                    port="${rest#*:}"
-
-                    echo ""
-                    echo "[cluster:$name]"
-                    echo "address = $value"
-                    if [ "$has_creds" -eq 1 ]; then
-                        echo "username = $user"
-                        echo "password = $pass"
-                    fi
-                fi
-            done
-        fi
     } > "$CONFIG_PATH"
 
     echo "Generated config:"

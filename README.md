@@ -178,19 +178,11 @@ permit = ping
 | Option | Description |
 |--------|-------------|
 | `ports` | Port range for UDP sockets, as `low-high` (e.g. `7000-7999`). Default 7000–7999. (daemon only) |
-| `listen` | API server listen address. If not set, API server is disabled. |
+| `listen` | API server listen address. Can be repeated for multiple addresses. If not set, API server is disabled. |
 | `advertise` | Optional. IP address to advertise in API responses instead of the port number. Useful when behind NAT. (daemon only) |
-| `cluster` | Repeat for each backing node name. Enables cluster mode and specifies node names. |
+| `cluster` | Repeat for each backing node. Format: `tcp://[user:pass@]host:port` or `unix:///path/to/socket`. Enables cluster mode. |
 
-### `[cluster:<name>]`
-
-| Option | Description |
-|--------|-------------|
-| `address` | Connection string for the backing node (e.g., `tcp://127.0.0.1:19122` or `unix:///path/to/socket`). |
-| `username` | Username for authentication to the backing node. |
-| `password` | Password for authentication to the backing node. |
-
-### `[api:<name>]`
+### `[user:<name>]`
 
 | Option | Description |
 |--------|-------------|

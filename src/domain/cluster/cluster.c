@@ -7,7 +7,9 @@
 
 #include "common/resp.h"
 #include "common/scheduler.h"
+#include "common/url_utils.h"
 #include "domain/config.h"
+#include "finwo/url-parser.h"
 #include "rxi/log.h"
 
 cluster_state_t *cluster_state = NULL;
@@ -81,23 +83,29 @@ void cluster_init(void) {
     resp_object *elem = &cluster_nodes->u.arr.elem[i];
     if (elem->type != RESPT_BULK || !elem->u.s) continue;
 
-    const char *node_name = elem->u.s;
+    const char *address = elem->u.s;
 
-    char node_section[256];
-    snprintf(node_section, sizeof(node_section), "cluster:%s", node_name);
-    resp_object *node_sec = resp_map_get(domain_cfg, node_section);
+    struct parsed_url *purl = NULL;
+    if (parse_address_url(address, &purl) != 0) {
+      log_error("cluster: failed to parse address '%s'", address);
+      continue;
+    }
 
-    const char *address  = node_sec ? resp_map_get_string(node_sec, "address") : NULL;
-    const char *username = node_sec ? resp_map_get_string(node_sec, "username") : NULL;
-    const char *password = node_sec ? resp_map_get_string(node_sec, "password") : NULL;
-
-    if (!address) {
-      log_error("cluster: node '%s' has no address configured", node_name);
+    char *node_name = NULL;
+    if (purl->host && purl->port) {
+      asprintf(&node_name, "%s-%s", purl->host, purl->port);
+    } else if (purl->scheme && strcmp(purl->scheme, "unix") == 0 && purl->path) {
+      const char *basename = strrchr(purl->path, '/');
+      basename             = basename ? basename + 1 : purl->path;
+      asprintf(&node_name, "unix-%s", basename);
+    } else {
+      log_error("cluster: cannot generate node name for address '%s'", address);
+      parsed_url_free(purl);
       continue;
     }
 
     cluster_node_t *node = calloc(1, sizeof(cluster_node_t));
-    if (cluster_node_init(node, node_name, address, username, password) == 0) {
+    if (cluster_node_init(node, node_name, address, purl->username, purl->password) == 0) {
       cluster_nodes_add(cluster_state->nodes, node);
       sched_create(cluster_node_healthcheck_pt, node);
       log_info("cluster: added node '%s' at %s", node->name, node->address);
@@ -105,6 +113,8 @@ void cluster_init(void) {
       cluster_node_free(node);
       free(node);
     }
+    free(node_name);
+    parsed_url_free(purl);
   }
 
   cluster_state->initialized = 1;

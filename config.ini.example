@@ -1,6 +1,8 @@
 [udphole]
 ports = 7000-7999
 listen = :12345
+listen = 192.168.1.1:12345
+listen = unix:///tmp/udphole.sock
 
 [user:admin]
 secret = adminpass
