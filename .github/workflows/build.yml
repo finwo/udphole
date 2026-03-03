@@ -74,11 +74,11 @@ jobs:
         run: dep install
 
       - if: matrix.cross
-        uses: uraimo/run-on-arch-action@v2
+        uses: uraimo/run-on-arch-action@v3
         name: Build
         with:
           arch: ${{ matrix.arch }}
-          distro: ubuntu_latest
+          distro: ubuntu24.04
           githubToken: ${{ github.token }}
           install: |
             apt-get update -y

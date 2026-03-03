@@ -7,7 +7,7 @@ SRC:=
 # UNAME_SYSTEM=$(call lc,$(shell uname -s))
 
 BIN?=udphole
-VERSION?=1.3.1
+VERSION?=1.3.2
 
 CC:=gcc
 CPP:=g++
