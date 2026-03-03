@@ -152,5 +152,5 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: finwo/udphole
-          short-description: "UDP hole punching proxy with RESP2 API"
-          readme-filepath: README.md
+          short-description: "UDP hole punching proxy with RESP2 API | Source: https://github.com/finwo/udphole"
+          readme-filepath: DOCKER.md
