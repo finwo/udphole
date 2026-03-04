@@ -85,7 +85,7 @@ jobs:
             apt-get install -yq build-essential
           run: |
             make -j udphole VERSION=${{ needs.version.outputs.version }}
-            strip --strip-all udphole
+            strip udphole
             mv udphole ${{ matrix.bin }}
 
       - if: '!matrix.cross'
@@ -93,7 +93,7 @@ jobs:
         shell: bash
         run: |
           make -j udphole VERSION=${{ needs.version.outputs.version }}
-          strip --strip-all udphole
+          strip udphole
           mv udphole ${{ matrix.bin }}
 
       - name: Upload to release

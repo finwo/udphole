@@ -3,18 +3,7 @@ set -e
 
 CONFIG_PATH="/etc/udphole.conf"
 
-ARCH="$(uname -m)"
-case "$ARCH" in
-    x86_64)  ARCH=amd64 ;;
-    aarch64) ARCH=arm64 ;;
-    riscv64) ARCH=riscv64 ;;
-esac
-
-UDPHBIN="/usr/bin/udphole-linux-${ARCH}"
-
-if [ ! -f "$UDPHBIN" ]; then
-    UDPHBIN="/usr/bin/udphole-linux-amd64"
-fi
+UDPHBIN="/usr/bin/udphole"
 
 if [ -f "$CONFIG_PATH" ]; then
     echo "Using mounted config: $CONFIG_PATH"
