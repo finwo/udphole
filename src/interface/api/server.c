@@ -603,31 +603,60 @@ int api_client_pt(int64_t timestamp, struct pt_task *task) {
     return SCHED_RUNNING;
   }
 
-  char    buf[1];
-  ssize_t n = recv(state->fd, buf, 1, MSG_PEEK);
-  if (n <= 0) {
+  // Read data into receive buffer
+  if (state->rlen >= READ_BUF_SIZE) {
+    // Buffer full, protocol error
     goto cleanup;
   }
 
-  resp_object *cmd = resp_read(state->fd);
-  if (!cmd) {
+  ssize_t n = recv(state->fd, state->rbuf + state->rlen, READ_BUF_SIZE - state->rlen, 0);
+  if (n < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       return SCHED_RUNNING;
     }
     goto cleanup;
   }
+  if (n == 0) {
+    goto cleanup;
+  }
+  state->rlen += (size_t)n;
+  log_trace("api: received %zd bytes, buffer len=%zu", n, state->rlen);
+
+  // Try to parse RESP object from buffer
+  resp_object *cmd = NULL;
+  int consumed = resp_read_buf(state->rbuf, state->rlen, &cmd);
+  log_trace("api: resp_read_buf returned %d, cmd=%p", consumed, (void*)cmd);
+  if (consumed > 0) {
+    // Successfully parsed - consume bytes from buffer
+    memmove(state->rbuf, state->rbuf + consumed, state->rlen - consumed);
+    state->rlen -= consumed;
+  } else if (consumed < 0) {
+    // Incomplete - need more data, will retry on next call with same buffer
+    return SCHED_RUNNING;
+  } else {
+    // No data - shouldn't happen, but continue
+    return SCHED_RUNNING;
+  }
+
+  if (!cmd) {
+    return SCHED_RUNNING;
+  }
 
   if (cmd->type != RESPT_ARRAY || cmd->u.arr.n == 0) {
+    log_trace("api: not an array or empty (type=%d, n=%zu), sending protocol error", cmd->type, cmd->u.arr.n);
     resp_free(cmd);
     api_write_err(state, "Protocol error");
     client_flush(state);
     return SCHED_RUNNING;
   }
 
+  log_trace("api: array has %zu elements", cmd->u.arr.n);
+
   char *args[MAX_ARGS];
   int   nargs = 0;
   for (size_t i = 0; i < cmd->u.arr.n && nargs < MAX_ARGS; i++) {
     resp_object *elem = &cmd->u.arr.elem[i];
+    log_trace("api: elem[%zu] type=%d, s=%s", i, elem->type, elem->u.s ? elem->u.s : "(null)");
     if (elem->type == RESPT_BULK && elem->u.s) {
       args[nargs++] = elem->u.s;
       elem->u.s     = NULL;
@@ -636,9 +665,11 @@ int api_client_pt(int64_t timestamp, struct pt_task *task) {
     }
   }
 
+  log_trace("api: dispatching command with %d args", nargs);
   if (nargs > 0) {
     dispatch_command(state, args, nargs);
   }
+  log_trace("api: command dispatched");
 
   for (int j = 0; j < nargs; j++) {
     free(args[j]);
