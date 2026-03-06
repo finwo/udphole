@@ -16,12 +16,8 @@ else
         echo "listen = :${API_PORT:-6379}"
 
         if [ -n "$CLUSTER" ]; then
-            for name in $(echo "$CLUSTER" | tr ',' ' '); do
-                env_var="CLUSTER_$name"
-                eval "value=\$$env_var"
-                if [ -n "$value" ]; then
-                    echo "cluster = $value"
-                fi
+            for addr in $(echo "$CLUSTER" | tr ',' ' '); do
+                echo "cluster = $addr"
             done
         fi
 
