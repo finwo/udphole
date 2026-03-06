@@ -46,6 +46,7 @@ struct api_client_state {
   char  *username;
   char   rbuf[READ_BUF_SIZE];
   size_t rlen;
+  resp_object *partial_obj;
   char  *wbuf;
   size_t wlen;
   size_t wcap;
@@ -603,18 +604,42 @@ int api_client_pt(int64_t timestamp, struct pt_task *task) {
     return SCHED_RUNNING;
   }
 
-  char    buf[1];
-  ssize_t n = recv(state->fd, buf, 1, MSG_PEEK);
-  if (n <= 0) {
+  // Read data into receive buffer
+  if (state->rlen >= READ_BUF_SIZE) {
+    // Buffer full, protocol error
     goto cleanup;
   }
 
-  resp_object *cmd = resp_read(state->fd);
-  if (!cmd) {
+  ssize_t n = recv(state->fd, state->rbuf + state->rlen, READ_BUF_SIZE - state->rlen, 0);
+  if (n < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       return SCHED_RUNNING;
     }
     goto cleanup;
+  }
+  if (n == 0) {
+    goto cleanup;
+  }
+  state->rlen += (size_t)n;
+
+  // Try to parse RESP object from buffer
+  resp_object *cmd = NULL;
+  int consumed = resp_read_buf(state->rbuf, state->rlen, &cmd);
+  if (consumed > 0) {
+    // Successfully parsed - consume bytes from buffer
+    memmove(state->rbuf, state->rbuf + consumed, state->rlen - consumed);
+    state->rlen -= consumed;
+    state->partial_obj = NULL;
+  } else if (consumed < 0) {
+    // Incomplete - need more data
+    return SCHED_RUNNING;
+  } else {
+    // No data - shouldn't happen, but continue
+    return SCHED_RUNNING;
+  }
+
+  if (!cmd) {
+    return SCHED_RUNNING;
   }
 
   if (cmd->type != RESPT_ARRAY || cmd->u.arr.n == 0) {
@@ -660,6 +685,7 @@ cleanup:
   free(state->fds);
   free(state->wbuf);
   free(state->username);
+  resp_free(state->partial_obj);
   free(state);
   return SCHED_DONE;
 }
