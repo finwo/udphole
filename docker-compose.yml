@@ -9,8 +9,8 @@ services:
     ports:
       - "${API_PORT:-6379}:${API_PORT:-6379}"
       - "7000-7999:7000-7999/udp"
-    volumes:
-      - ./udphole.conf:/etc/udphole.conf:ro
+    # volumes:
+    #   - ./udphole.conf:/etc/udphole.conf:ro
     environment:
       - API_PORT=6379
       - UDP_PORTS=7000-7999

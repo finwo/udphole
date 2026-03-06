@@ -8,6 +8,8 @@ Run udphole as a Docker container.
 docker run -p 6379:6379 -p 7000-7999:7000-7999/udp finwo/udphole
 ```
 
+The entrypoint always adds `--no-daemonize` to ensure the container stays running.
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -17,12 +19,9 @@ docker run -p 6379:6379 -p 7000-7999:7000-7999/udp finwo/udphole
 | `LOG_LEVEL` | `info` | Log verbosity: fatal, error, warn, info, debug, trace |
 | `API_ADMIN_USER` | `admin` | Username for admin user |
 | `API_ADMIN_PASS` | `supers3cret` | Password for admin user |
-| `CLUSTER` | | Comma-separated list of cluster node names (enables cluster mode) |
-| `CLUSTER_<NAME>` | | Connection string for cluster node `<NAME>` (e.g., `tcp://user:pass@host:port`) |
+| `CLUSTER` | | Comma-separated list of cluster node addresses (enables cluster mode, e.g., `tcp://user:pass@host1:6379,tcp://user:pass@host2:6379`) |
 
-## Configuration
-
-### Auto-generated Config
+## Auto-generated Config
 
 If no config file is mounted, the container auto-generates `/etc/udphole.conf` from environment variables:
 
@@ -45,6 +44,8 @@ docker run -p 6379:6379 -p 7000-7999:7000-7999/udp \
   -v /path/to/udphole.conf:/etc/udphole.conf:ro \
   finwo/udphole
 ```
+
+Note: Even with cluster fields defined in a mounted config, you must set `CLUSTER` to any value to run in cluster mode (the entrypoint uses this to decide between `daemon` and `cluster` commands).
 
 ### Listen Address Formats
 
@@ -71,13 +72,11 @@ listen = unix:///tmp/udphole.sock
 
 ## Cluster Mode
 
-To run in cluster mode, set the `CLUSTER` environment variable and define node addresses:
+To run in cluster mode, set the `CLUSTER` environment variable with comma-separated node addresses:
 
 ```bash
 docker run -p 6379:6379 -p 7000-7999:7000-7999/udp \
-  -e CLUSTER=node1,node2 \
-  -e CLUSTER_NODE1=tcp://user:pass@192.168.1.10:6379 \
-  -e CLUSTER_NODE2=tcp://user:pass@192.168.1.11:6379 \
+  -e CLUSTER="tcp://user:pass@192.168.1.10:6379,tcp://user:pass@192.168.1.11:6379" \
   finwo/udphole
 ```
 
