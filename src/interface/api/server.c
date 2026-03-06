@@ -14,6 +14,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -472,6 +473,9 @@ static void handle_accept(int ready_fd) {
   int                     fd      = accept(ready_fd, (struct sockaddr *)&addr, &addrlen);
   if (fd < 0) return;
   set_socket_nonblocking(fd, 1);
+
+  int flag = 1;
+  setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
   api_client_t *state = calloc(1, sizeof(*state));
   if (!state) {
