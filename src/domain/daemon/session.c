@@ -19,7 +19,6 @@
 #include "common/socket_util.h"
 #include "domain/config.h"
 #include "rxi/log.h"
-#include "tidwall/hashmap.h"
 
 static resp_object *get_udphole_cfg(void) {
   return domain_cfg ? resp_map_get(domain_cfg, "udphole") : NULL;
