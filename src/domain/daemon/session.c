@@ -82,27 +82,32 @@ static socket_t *find_socket(session_t *s, const char *socket_id) {
   return NULL;
 }
 
+// port_cur = last-assigned-port
+int port_cur = 0;
 static int alloc_port(void) {
   resp_object *udphole = get_udphole_cfg();
   if (!udphole) return 0;
   const char *ports_str = resp_map_get_string(udphole, "ports");
-  int         port_low = 7000, port_high = 7999, port_cur = 7000;
+  int         port_low = 7000, port_high = 7999;
   if (ports_str) sscanf(ports_str, "%d-%d", &port_low, &port_high);
-  const char *port_cur_str = resp_map_get_string(udphole, "_port_cur");
-  if (port_cur_str) port_cur = atoi(port_cur_str);
 
-  for (int i = 0; i < port_high - port_low; i++) {
-    int port = port_cur + i;
-    if (port > port_high) port = port_low;
-    port_cur = port + 1;
+  // Limit port tries
+  for (int i = 0; i < (port_high - port_low); i++) {
+
+    // Select next port
+    port_cur++;
+    if (port_cur < port_low ) port_cur = port_low;
     if (port_cur > port_high) port_cur = port_low;
+    int port = port_cur;
 
+    // Build sockaddr
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family      = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port        = htons(port);
 
+    // Check if the port is free
     int udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (udp_fd < 0) continue;
     int ok = (bind(udp_fd, (struct sockaddr *)&addr, sizeof(addr)) == 0);
@@ -111,6 +116,8 @@ static int alloc_port(void) {
 
     return port;
   }
+
+  // Nothing found
   return 0;
 }
 
