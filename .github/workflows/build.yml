@@ -52,10 +52,10 @@ jobs:
           #   bin: udphole-windows-amd64.exe
           #   cross: false
 
-          - name: darwin-arm64
-            runs-on: macos-latest
-            bin: udphole-darwin-arm64
-            cross: false
+          # - name: darwin-arm64
+          #   runs-on: macos-latest
+          #   bin: udphole-darwin-arm64
+          #   cross: false
 
     steps:
       - uses: actions/checkout@v4
