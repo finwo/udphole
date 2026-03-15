@@ -19,18 +19,18 @@ SRC:=$(filter-out $(wildcard src/test/test_*.c),$(SRC))
 
 INCLUDES:=
 
-override CFLAGS?=-Wall -O2
-override CFLAGS+=-I src -D INI_HANDLER_LINENO=1 -D'UDPHOLE_VERSION_STR="$(VERSION)"'
-override LDFLAGS?=
+CFLAGS?=-Wall -O2
+CFLAGS+=-I src -D INI_HANDLER_LINENO=1 -D'UDPHOLE_VERSION_STR="$(VERSION)"'
+LDFLAGS?=
 
-override LDFLAGS+=-lresolv
+LDFLAGS+=-lresolv
 
-override CPPFLAGS?=
+CPPFLAGS?=
 
 ifeq ($(OS),Windows_NT)
     # CFLAGS += -D WIN32
-    override CPPFLAGS+=-lstdc++
-    override CPPFLAGS+=
+    CPPFLAGS+=-lstdc++
+    CPPFLAGS+=
     ifeq ($(PROCESSOR_ARCHITEW6432),AMD64)
         # CFLAGS += -D AMD64
     else
@@ -45,15 +45,15 @@ else
     UNAME_S := $(shell uname -s)
     ifeq ($(UNAME_S),Linux)
         # CFLAGS += -D LINUX
-        override CPPFLAGS+=-lstdc++
-        # override CFLAGS+=$(shell pkg-config --cflags glib-2.0)
-        # override LDFLAGS+=$(shell pkg-config --libs glib-2.0)
-        override CFLAGS+=-D _GNU_SOURCE
+        CPPFLAGS+=-lstdc++
+        # CFLAGS+=$(shell pkg-config --cflags glib-2.0)
+        # LDFLAGS+=$(shell pkg-config --libs glib-2.0)
+        CFLAGS+=-D _GNU_SOURCE
     endif
     ifeq ($(UNAME_S),Darwin)
         # CFLAGS += -D OSX
-        override CPPFLAGS+=-std=c++14
-        override CFLAGS+=-D _BSD_SOURCE
+        CPPFLAGS+=-std=c++14
+        CFLAGS+=-D _BSD_SOURCE
     endif
     UNAME_P := $(shell uname -p)
     ifeq ($(UNAME_P),x86_64)
@@ -73,9 +73,9 @@ include lib/.dep/config.mk
 OBJ:=$(SRC:.c=.o)
 OBJ:=$(OBJ:.cc=.o)
 
-override CFLAGS+=$(INCLUDES)
-override CPPFLAGS+=$(INCLUDES)
-override CPPFLAGS+=$(CFLAGS)
+CFLAGS+=$(INCLUDES)
+CPPFLAGS+=$(INCLUDES)
+CPPFLAGS+=$(CFLAGS)
 
 .PHONY: default
 default: $(BIN)
